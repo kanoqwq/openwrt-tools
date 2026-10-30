@@ -12,6 +12,11 @@ def child(package):
     mu = (package / 'desktop/manifest.json').is_file()
     meta = {'path': str(package), 'adapter': 'mu300' if mu else 'e5'}
     a = Adapter(meta)
+    library = a.legacy._storage.library(package) if mu else a.legacy.storage_api()['library']()
+    family = 'mu300' if mu else 'e5'
+    other = 'e5' if mu else 'mu300'
+    if family+'_storage_identity()' not in library or other+'_storage_identity()' in library:
+        raise AssertionError('Frozen package selected the wrong storage family')
     model = 'MU300' if mu else a.legacy.package_profile()['android_models'][0]
     calls = []
 
@@ -75,7 +80,7 @@ def child(package):
         pass
     else:
         raise AssertionError('Missing card must block TF installation')
-    print(json.dumps({'package': package.name, 'frozen_backend': True, 'simulated_transport': True, 'non_tf_probes': ['part', 'reinstall', 'image', 'boot'], 'reinstall_target': plan['target'], 'reinstall_bytes': plan['openwrt_bytes'], 'tf_missing_card_rejected': True, 'hardware_access': False}))
+    print(json.dumps({'package': package.name, 'frozen_backend': True, 'storage_family': family, 'legacy_helper_replaced': True, 'simulated_transport': True, 'non_tf_probes': ['part', 'reinstall', 'image', 'boot'], 'reinstall_target': plan['target'], 'reinstall_bytes': plan['openwrt_bytes'], 'tf_missing_card_rejected': True, 'hardware_access': False}))
 if __name__ == '__main__':
     if len(sys.argv) > 1 and sys.argv[1] == '--child':
         child(Path(sys.argv[2]).resolve())
