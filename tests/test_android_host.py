@@ -275,7 +275,7 @@ class AndroidHostTests(unittest.TestCase):
 
     def test_extracted_directory_import_stays_private_and_reuses_content_identity(self):
         with tempfile.TemporaryDirectory() as temp:
-            root=Path(temp);runtime=Runtime.__new__(Runtime);runtime.directory=root
+            root=Path(temp).resolve();runtime=Runtime.__new__(Runtime);runtime.directory=root
             for name in ('one','two'):
                 source=root/'imports'/name/'directory';(source/'files').mkdir(parents=True)
                 (source/'files/device-profile.json').write_text('{}')

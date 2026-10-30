@@ -151,10 +151,10 @@ class MacIntegrationTest(unittest.TestCase):
         adb = self.root/'adb-source'
         adb.mkdir()
         for name in ('adb', 'NOTICE.txt'): (adb/name).write_text('fixture')
-        backend = self.root/'work/installer-backend-macos/dist/openwrt-backend'
+        backend = self.installer/'work/installer-backend-macos/dist/openwrt-backend'
         backend.mkdir(parents=True)
         (backend/'openwrt-backend').write_text('fixture')
-        with patch.object(build, 'HERE', self.installer), patch.object(build, 'native_platform', return_value='macos-arm64'), patch.object(build, 'sources', return_value=self.source), patch.object(build, 'run') as commands, patch.object(build.subprocess, 'run') as child, patch.object(build.subprocess, 'check_output', return_value='arm64\n'), patch.object(sys, 'argv', ['build.py', '--adb-dir', str(adb)]), patch.dict(os.environ):
+        with patch.object(build, 'HERE', self.installer), patch.object(build, 'native_platform', return_value='macos-arm64'), patch.object(build, 'sources', return_value=self.source), patch.object(build, 'run') as commands, patch.object(build.subprocess, 'run') as child, patch.object(build.subprocess, 'check_output', return_value='arm64\n'), patch.object(sys, 'argv', ['build.py', '--adb-dir', str(adb)]), patch.dict(os.environ,{'OPENWRT_TOOLS_WORK':str(self.installer/'work')}):
             with redirect_stdout(io.StringIO()):
                 build.main()
         args = [call.args for call in commands.call_args_list]

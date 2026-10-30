@@ -15,7 +15,8 @@ def path_relocator(original, target):
     roots = [root]
     # macOS /var and /private/var (and imported directory aliases) can name
     # the same existing record. Portable paths from another OS stay lexical.
-    if parser is PurePosixPath and os.name == 'posix' and Path(original).exists():
+    native = (parser is PurePosixPath and os.name == 'posix' or parser is PureWindowsPath and os.name == 'nt')
+    if native and Path(original).exists():
         resolved = parser(str(Path(original).resolve()))
         if resolved != root: roots.append(resolved)
 
