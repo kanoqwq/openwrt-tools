@@ -111,10 +111,14 @@ def attach(package):
     (package/'diff-tool.json').write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8',newline='\n')
     guide=(TOP/'docs/DIFF-STUDIO.zh-CN.md').read_text(encoding='utf-8')
     (package/'docs/DIFF-STUDIO.md').write_text(guide,encoding='utf-8',newline='\n')
+    from package_android import attach as attach_android
+    attach_android(package)
     start=package/'START-HERE.md'
     with start.open('a',encoding='utf-8',newline='\n') as stream:
         stream.write('\n## Diff Studio / 差异更新工具\n\n'
                      'Windows: **OpenWrt-Diff-Studio.exe**. Apple Silicon: **OpenWrt-Diff-Studio.app**.\n\n'
+                     'Android: **OpenWrt-Tools.apk**（本目录直接安装 / install directly from this directory）. '
+                     '[Android 使用说明 / guide](docs/ANDROID-INSTALLER.md).\n\n'
                      '完整解压后打开对应程序；与安装器共用 tools 目录，请勿单独移动 EXE 或 APP。'
                      '选择旧、新完整包生成更新补丁；操作说明见 [DIFF-STUDIO.md](docs/DIFF-STUDIO.md)。\n')
     return manifest

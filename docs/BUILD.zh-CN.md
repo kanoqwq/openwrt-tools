@@ -46,3 +46,8 @@ python3 tools/build-release.py run --workspace /home/kano/openwrt-build --label 
 子模块固定到本仓库提交，构建后更新父仓库的 gitlink。package_gui.attach 允许通过 OPENWRT_GUI_ARTIFACT 与 OPENWRT_GUI_MACOS_ARTIFACT 指向同一份已校验交付件，避免两边重复编译。旧 artifact 指纹包含父目录资源路径，提取后必须第一次重编；以后只有相关源码变化才重编。
 
 固件刷新/热补命令显式设置 OPENWRT_FIRMWARE_SOURCE。installer 本身无需固件源码即可构建；不得用相邻旧仓库文件兜底补缺输入。
+
+
+## 固件包根目录的 APK
+
+package_diff.py 的公共收尾步骤调用 package_android.py，固定附带一份 OpenWrt-Tools.apk、docs/GUI-BUILD-android.json 和 docs/ANDROID-INSTALLER.md。完整打包与父仓库的 refresh-installers 都必须保留这些文件及完整校验清单。可用 OPENWRT_GUI_ANDROID_ARTIFACT 显式复用另一检出的已验证 artifacts/android；源码、release 签名记录、ABI/ELF 和文件摘要必须匹配。只改打包胶水不重编未变化的桌面或 APK。

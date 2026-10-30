@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
+from unittest.mock import patch
 
 TOP=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(TOP))
@@ -18,6 +19,7 @@ tool=runpy.run_path(str(TOP/'package_diff.py'))
 
 class DiffPackaging(unittest.TestCase):
     def setUp(self):
+        mock=patch('package_android.attach');mock.start();self.addCleanup(mock.stop)
         temp=tempfile.TemporaryDirectory();self.addCleanup(temp.cleanup);self.root=Path(temp.name)/'package'
         (self.root/'docs').mkdir(parents=True);(self.root/'START-HERE.md').write_text('Installer guide\n')
         self.native={}
