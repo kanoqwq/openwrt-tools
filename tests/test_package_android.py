@@ -2,6 +2,7 @@
 import hashlib
 import io
 import json
+import runpy
 from pathlib import Path
 import sys
 import tempfile
@@ -60,6 +61,28 @@ class AndroidPackaging(unittest.TestCase):
             archive.writestr(tool.METADATA,json.dumps(self.build))
         with zipfile.ZipFile(io.BytesIO(output.getvalue())) as archive,self.assertRaisesRegex(ValueError,'one'):
             tool.verify_archive(archive)
+
+
+class PortableAndroidFingerprint(unittest.TestCase):
+    def test_checkout_line_endings_and_generated_rules_do_not_mask_real_source_changes(self):
+        source=runpy.run_path(str(ROOT/'build-android.py'))['sources']
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            names=('build-android.py','release-index.py','backend/main.py','mobile/App.kt',
+                   'mobile/gen/gradlew.bat','mobile/gen/proguard-rules.pro',
+                   'ui/package.json','ui/package-lock.json','ui/vite.config.ts','ui/index.html',
+                   'ui/diff.html','ui/ota.html','ui/release-index.html')
+            for name in names:
+                p=root/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b'first\r\nsecond\r\n')
+            with patch.dict(source.__globals__,HERE=root,MOBILE=root/'mobile'),patch.object(runpy,'run_path',return_value={'sources':lambda:{}}):
+                first=source()
+                for name in names:(root/name).write_bytes((root/name).read_bytes().replace(b'\r\n',b'\n'))
+                (root/'mobile/gen/proguard-tauri.pro').write_text('generated rules')
+                (root/'mobile/gen/.gitignore').write_text('local metadata')
+                (root/'mobile/gen/.editorconfig').write_text('local metadata')
+                self.assertEqual(first,source())
+                (root/'mobile/App.kt').write_text('real production change')
+                self.assertNotEqual(first,source())
 
 
 if __name__=='__main__':unittest.main()
