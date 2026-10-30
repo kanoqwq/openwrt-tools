@@ -91,3 +91,16 @@ def require_approval(record, actual):
             not same_token(approval.get('fingerprint'), wanted)):
         raise ValueError('Model changed or confirmation is missing; review the plan again / '
                          '机型发生变化或尚未确认，请重新查看安装计划并输入 yes')
+
+
+def confirm_mu300_cli(text, platform=''):
+    """Console ownership is explicit; this is never called by the JSON GUI."""
+    names = text.strip().splitlines()
+    model,board = names[0] if names else '', names[1] if len(names)>1 else ''
+    profile,warning = mu300_android(model,board,platform)
+    if warning:
+        print('Model differs / 机型差异: '+model+' ('+board+' / '+platform+')')
+        print('Continue with the selected package at your own risk / 请确认硬件兼容并自行承担风险。')
+        if input('Type yes to continue / 输入 yes 继续: ') != 'yes':
+            raise ValueError('Model exception was not confirmed / 尚未确认机型差异')
+    return profile

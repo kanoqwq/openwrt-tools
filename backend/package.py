@@ -88,3 +88,8 @@ def inspect_package(directory):
         release_data = json.loads(release_file.read_text(encoding='utf-8'))
         package['release_version'] = release_data['image_version']
     return package
+
+
+def hotspot_name(profile):
+    names = {'e5':'E5','t551m':'T551M','m8':'M8','t512n':'T512N','yuanhang41s':'Yuanhang41S','k1':'K1','lym10k':'LYM-10K','changxing60':'Changxing60'}
+    return names.get(profile,profile)+'-OpenWrt'

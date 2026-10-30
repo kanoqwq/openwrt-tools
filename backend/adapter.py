@@ -88,11 +88,10 @@ class Adapter:
         self.legacy.input = self.console_input_unavailable
         if self.kind == 'e5':
             self.legacy.B, self.legacy.F, self.legacy.SCRIPTS = str(self.root), str(self.root/'files'), str(self.root/'scripts')
-            from .package import e5_profile
+            from .package import e5_profile, hotspot_name
             self.legacy.package_profile = lambda:e5_profile(self.root)
             self.legacy.storage_api = lambda:vars(storage_io)
-            names = {'e5':'E5','t551m':'T551M','m8':'M8','t512n':'T512N','yuanhang41s':'Yuanhang41S','k1':'K1','lym10k':'LYM-10K','changxing60':'Changxing60'}
-            self.legacy.default_hotspot_name = lambda:names.get(self.package['profile'],self.package['profile'])+'-OpenWrt'
+            self.legacy.default_hotspot_name = lambda:hotspot_name(self.package['profile'])
             # Old compatible package scripts must not retain their exact-hash
             # gate when selecting the already installed system.
             self.legacy.boot_openwrt = lambda args:boot_installed_e5(vars(self.legacy), self.adb.read)

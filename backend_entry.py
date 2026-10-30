@@ -21,10 +21,9 @@ if __name__ == '__main__':
         options, remaining = parser.parse_known_args()
         root = options.package_root.resolve()
         module = load(root/'OpenWrt-Installer.py', '_compat_cli')
-        if (root/'desktop/manifest.json').is_file():
-            module.package_root = lambda: root
+        from backend.legacy_cli import bind
+        if bind(module, root) == 'mu300':
             sys.exit(module.run_cli(remaining))
-        module.B, module.F, module.SCRIPTS = str(root), str(root/'files'), str(root/'scripts')
         sys.argv = ['OpenWrt-Installer.py', *remaining]
         sys.exit(module.run_cli())
     else:
