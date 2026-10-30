@@ -82,6 +82,24 @@ class FamilyIntegration(unittest.TestCase):
             (root/'OpenWrt-Installer.py').write_text('# fixture')
             with self.assertRaisesRegex(ValueError,'Ambiguous'):inspect_package(root)
 
+    def test_old_package_storage_helpers_are_replaced_by_the_selected_shared_library(self):
+        for family in ('e5','mu300'):
+            with self.subTest(family=family),tempfile.TemporaryDirectory() as temp,patch.object(host,'_provider',None):
+                root=Path(temp)
+                if family=='e5':
+                    (root/'files').mkdir()
+                    (root/'files/device-profile.json').write_text(json.dumps({'profile':'e5','android_models':['E5']}))
+                    entry="def storage_api(): raise AssertionError('old single storage.sh helper executed')\ndef storage_script(): return storage_api()['library']()\n"
+                else:
+                    (root/'desktop').mkdir();(root/'desktop/manifest.json').write_text('{}')
+                    entry="_storage=None\nclass Android:\n def storage_script(self): return _storage.library(package_root())\n"
+                (root/'OpenWrt-Installer.py').write_text(entry)
+                adapter=Adapter({'path':str(root),'adapter':family,'profile':'e5' if family=='e5' else 'mu300-family'})
+                script=adapter.legacy.storage_script() if family=='e5' else adapter.legacy.Android().storage_script()
+                self.assertIn(family+'_storage_identity()',script)
+                other='mu300' if family=='e5' else 'e5'
+                self.assertNotIn(other+'_storage_identity()',script)
+
     def test_mu300_cannot_enter_e5_nv_recovery(self):
         adapter=Adapter.__new__(Adapter)
         record={'package':{'adapter':'mu300'}}
