@@ -185,10 +185,11 @@ class Desktop:
                 self.index_path = result.get('index_path')
                 return result
             if command == 'ota_package':
+                self.review = None
+                self.archive_path = None
                 archive = Path(p.get('path') or self.root / 'update.ota')
                 with Patch(archive) as patch:
                     self.archive_path = archive
-                    self.review = None
                     return dict(path=str(archive), id=patch.id, manifest=patch.manifest)
             if command == 'ota_probe':
                 self.review = None

@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 import hashlib
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -112,7 +113,7 @@ class Store:
 
     def load(self, tid):
         record = json.loads((self.directory(tid) / 'transaction.json').read_text(encoding='utf-8'))
-        if record.get('version') != VERSION or record.get('id') != tid:
+        if not isinstance(record,dict) or record.get('version') != VERSION or record.get('id') != tid:
             raise ValueError('Unsupported or damaged transaction / 事务版本不支持或记录损坏')
         return record
 
@@ -120,7 +121,17 @@ class Store:
         records = []
         for path in (self.base / 'transactions').glob('*/transaction.json'):
             try:
-                records.append(self.load(path.parent.name))
+                record=self.load(path.parent.name)
+                # Old minimal recovery metadata remains loadable for path
+                # migration; incomplete records must not crash the home UI.
+                if (type(record.get('updated')) not in (int,float) or not math.isfinite(record['updated']) or
+                        any(not isinstance(record.get(key),dict) for key in ('device','package','choices','plan','effects')) or
+                        any(not isinstance(record.get(key),str) for key in ('status','stage')) or
+                        not isinstance(record.get('completed'),list) or
+                        not isinstance(record['package'].get('adapter'),str) or
+                        not isinstance(record['choices'].get('method'),str)):
+                    continue
+                records.append(record)
             except (OSError, ValueError):
                 continue
         return sorted(records, key=lambda r: r['updated'], reverse=True)

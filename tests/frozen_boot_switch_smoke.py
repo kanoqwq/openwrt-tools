@@ -1,5 +1,6 @@
 """Run real packaged switch entrypoints against simulated installed boot metadata."""
 import json
+from itertools import product
 from pathlib import Path
 import subprocess
 import sys
@@ -22,14 +23,16 @@ def child(package,gui_only=False):
     header[44:1580]=command.ljust(1536,b'\0')
     assert hashlib.sha256(header).digest()!=hashlib.sha256(original).digest()
     checks=[]
-    for mode in (('gui',) if gui_only else ('gui','cli')):
+    for mode,android_slot in product(('gui',) if gui_only else ('gui','cli'),('a','b')):
         adapter=Adapter(meta) if mode=='gui' else None
         legacy=adapter.legacy if adapter else load(package/'OpenWrt-Installer.py','switch_cli_fixture')
         if not adapter:
             legacy.B=str(package);legacy.F=str(package/'files');legacy.SCRIPTS=str(package/'scripts')
+        legacy.ANDROID_SLOT=android_slot
+        legacy.LINUX_SLOT=linux_slot='b' if android_slot=='a' else 'a'
         events=[];reads=[];invalid=False;chain_error=False
         def read(script):
-            assert 'if=/dev/block/by-name/boot_b' in script and 'of=' not in script
+            assert 'if=/dev/block/by-name/boot_'+linux_slot in script and 'of=' not in script
             reads.append(script)
             return bytes(4096) if invalid else bytes(header) if 'count=8' in script else tail
         def forbidden(*args,**kwargs):raise AssertionError('Unexpected package hash or root access')
@@ -41,7 +44,7 @@ def child(package,gui_only=False):
             assert args==('reboot',);events.append('reboot')
         legacy.steps=lambda *_:None;legacy.say=lambda *_:None
         legacy.find_adb=lambda:None;legacy.android_checks=lambda:None
-        legacy.device_size=lambda target:size if target=='/dev/block/by-name/boot_b' else forbidden()
+        legacy.device_size=lambda target:size if target=='/dev/block/by-name/boot_'+linux_slot else forbidden()
         legacy.boot_json=forbidden;legacy.bootchain=chain
         legacy.arm_slot_b=lambda:events.append('misc-trial')
         legacy.adb=adb;legacy.su_checked=forbidden
@@ -59,7 +62,7 @@ def child(package,gui_only=False):
         except ValueError:pass
         else:raise AssertionError('Failed chain accepted')
         assert not events
-        checks.append(mode)
+        checks.append({'entrypoint':mode,'android_slot':android_slot})
     print(json.dumps({'package':package.name,'frozen_backend':True,'entrypoints':checks,
                       'different_installed_release_accepted':True,'small_boot_reads_only':True,
                       'unknown_boot_rejected':True,'chain_failure_blocks_misc':True,'hardware_access':False}))

@@ -128,6 +128,15 @@ class DesktopTests(unittest.TestCase):
         self.assertRegex(result['runtime'], r'^/tmp/unisoc-ota-[a-f0-9]{64}$')
         self.assertEqual(self.app.runtime_session['runtime'], result['runtime'])
 
+    def test_selecting_a_broken_patch_invalidates_the_old_review(self):
+        reviewed=self.app.dispatch('ota_probe',self.params)
+        broken=self.root/'broken.ota';broken.write_bytes(b'not a patch')
+        with self.assertRaises(Exception):self.app.dispatch('ota_package',{'path':str(broken)})
+        self.assertIsNone(self.app.archive_path)
+        with self.assertRaisesRegex(ValueError,'Review'):
+            self.app.dispatch('ota_apply',dict(self.params,token=reviewed['token']))
+        self.assertEqual(self.shell.reboots,0)
+
     def test_filesystem_utilities_are_packaged_and_bootstrapped_first(self):
         self.app.dispatch('ota_probe', self.params)
         commands = self.shell.commands

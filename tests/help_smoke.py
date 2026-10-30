@@ -31,7 +31,7 @@ def main():
         dialog.get_by_role('button',name='下一步',exact=True).click();settle(page)
         dialog.get_by_role('heading',name='选择适合你的安装方式').wait_for()
         dialog.get_by_role('button',name='下一步',exact=True).click();settle(page)
-        dialog.get_by_text('电脑记录和备份都丢失时',exact=False).wait_for()
+        dialog.get_by_text('本机记录和备份都丢失时',exact=False).wait_for()
         dialog.get_by_role('button',name='上一步',exact=True).click();settle(page)
         dialog.get_by_role('button',name='下一步',exact=True).click();settle(page)
         dialog.get_by_role('button',name='开始使用',exact=True).click()

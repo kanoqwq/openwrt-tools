@@ -144,9 +144,11 @@ class Service:
         return Context(self.store, record, lambda *_: None).snapshot()
 
     def dispatch(self, request):
-        if request.get('protocol') != 1:
+        if not isinstance(request,dict) or request.get('protocol') != 1:
             raise ValueError('Protocol version mismatch')
         command, p = request.get('command'), request.get('params', {})
+        if not isinstance(command,str):
+            raise ValueError('Command must be a string / 命令格式无效')
         if not isinstance(p, dict):
             raise ValueError('Parameters must be an object')
         if command.startswith('ota_'):
@@ -260,6 +262,7 @@ class Service:
         if self.worker and self.worker.is_alive() and command not in ('export',):
             raise ValueError('An operation is active / 任务正在执行')
         if command == 'package':
+            self.package = None
             self.package = inspect_package(p.get('path') or self.package_root)
             self.package_root = self.package['path']
             return self.package
@@ -385,14 +388,41 @@ class Service:
         if command == 'export':
             record = self.store.load(p['transaction'])
             directory = self.store.directory(record['id'])
+            if record.get('unsafe'):
+                raise ValueError('Wait for the current write before exporting recovery backups / 请等待当前写入结束后再导出恢复备份')
             # Export path is selected by native dialog, archive paths are fixed.
-            target = Path(p['path'])
+            target = Path(p['path']).expanduser().resolve()
+            if target.is_relative_to(directory.resolve()):
+                raise ValueError('Choose an export destination outside the installation record / 请选择记录目录之外的导出位置')
             if target.exists():
                 raise ValueError('Export destination exists / 导出文件已存在')
-            with zipfile.ZipFile(target, 'w', zipfile.ZIP_DEFLATED) as archive:
-                for path in directory.rglob('*'):
-                    if path.is_file():
-                        archive.write(path, path.relative_to(directory).as_posix())
+            # Exclusive creation prevents overwriting a file created after the
+            # dialog. Failed archives must not block a retry or look complete.
+            try:
+                output = target.open('xb')
+            except FileExistsError:
+                raise ValueError('Export destination exists / 导出文件已存在') from None
+            try:
+                with output, zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
+                    archive.writestr('transaction.json',json.dumps(record,ensure_ascii=False,indent=2)+'\n')
+                    for path in directory.rglob('*'):
+                        if path == directory/'transaction.json' or path.name.startswith('.checkpoint-'):
+                            continue
+                        if path.is_file():
+                            if not path.resolve().is_relative_to(directory.resolve()):
+                                raise ValueError('Backup file is outside the record directory / 备份文件超出记录目录')
+                            before=path.stat()
+                            archive.write(path, path.relative_to(directory).as_posix())
+                            after=path.stat()
+                            if (before.st_size,before.st_mtime_ns)!=(after.st_size,after.st_mtime_ns):
+                                raise ValueError('Backup changed during export; retry at a safe pause / 备份在导出期间变化，请安全暂停后重试')
+                current=self.store.load(record['id'])
+                keys=('device','package','choices','plan','effects','legacy','legacy_phase','nv_recovery','online_shrink','uninstall')
+                if current.get('unsafe') or any(current.get(key)!=record.get(key) for key in keys):
+                    raise ValueError('Installation advanced during export; retry at a safe pause / 安装在导出期间推进，请安全暂停后重试')
+            except BaseException:
+                target.unlink(missing_ok=True)
+                raise
             return {'path': str(target)}
         if command == 'import':
             # Import full directories, never extract arbitrary ZIP paths here.
@@ -784,10 +814,10 @@ def main():
             service.emit('response', {'ok': True, 'result': value}, request.get('id'))
         except Exception as error:
             from .diagnostics import redact
-            params = request.get('params', {})
+            params = request.get('params', {}) if isinstance(request,dict) else {}
             private = [params.get(key) for key in ('serial','password')] if isinstance(params,dict) else []
             message = redact(f'{type(error).__name__}: {error}',private)[:2000]
-            service.emit('response', {'ok': False, 'error': message}, request.get('id'))
+            service.emit('response', {'ok': False, 'error': message}, request.get('id') if isinstance(request,dict) else None)
     # EOF requests safe cancellation; never kill a storage operation.
     if service.active:
         service.active.cancel = True

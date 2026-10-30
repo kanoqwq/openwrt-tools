@@ -194,6 +194,7 @@ class MobileHostPlugin(private val activity: Activity) : Plugin(activity) {
         val uri = result.data?.data
         if (state == null || result.resultCode != Activity.RESULT_OK || uri == null) { resolve(invoke, null);return }
         worker.execute {
+            var upload: ImportWorkspace? = null
             try {
                 startTask(true)
                 val runtime = MobileRuntime.get(activity)
@@ -203,7 +204,8 @@ class MobileHostPlugin(private val activity: Activity) : Plugin(activity) {
                     val name = activity.contentResolver.query(document, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
                         if (it.moveToFirst()) safeName(it.getString(0)) else "directory"
                     } ?: "directory"
-                    val target = File(MobileRuntime.directory, "imports/${UUID.randomUUID()}/$name")
+                    val workspace = ImportWorkspace(File(MobileRuntime.directory, "imports")); upload = workspace
+                    val target = workspace.file(name)
                     val digest = DocumentImporter(activity.applicationContext, ::emit).tree(uri, target)
                     resolve(invoke, runtime.callAttr("import_directory", target.absolutePath, digest, if (command == "pick_index_directory") "index" else "package").toString())
                     return@execute
@@ -217,7 +219,8 @@ class MobileHostPlugin(private val activity: Activity) : Plugin(activity) {
                     exports.reserve(path, uri)
                     resolve(invoke, path.absolutePath)
                 } else {
-                    val cache = File(MobileRuntime.directory, "imports/${UUID.randomUUID()}/$suggested")
+                    val workspace = ImportWorkspace(File(MobileRuntime.directory, "imports")); upload = workspace
+                    val cache = workspace.file(suggested)
                     cache.parentFile!!.mkdirs()
                     DocumentImporter(activity.applicationContext, ::emit).copy(uri, cache)
                     val selected = when (command) {
@@ -230,7 +233,13 @@ class MobileHostPlugin(private val activity: Activity) : Plugin(activity) {
                     resolve(invoke, selected)
                 }
             } catch (error: Exception) { invoke.reject(error.message ?: "File operation failed / 文件操作失败") }
-            finally { val running = try { MobileRuntime.get(activity).callAttr("busy").toBoolean() } catch (_: Exception) { false };if (running) startTask() else stopTask() }
+            finally {
+                if (!runCatching { upload?.cleanup() ?: true }.getOrDefault(false))
+                    emit(JSONObject().put("protocol", 1).put("type", "notice").put("data", JSONObject()
+                        .put("level", "warning").put("message", "Temporary upload could not be removed / 临时上传文件未能清理")).toString())
+                val running = try { MobileRuntime.get(activity).callAttr("busy").toBoolean() } catch (_: Exception) { false }
+                if (running) startTask() else stopTask()
+            }
         }
     }
     private fun safeName(value: String): String {

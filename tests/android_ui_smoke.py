@@ -8,6 +8,9 @@ MOBILE=BRIDGE+r'''
 localStorage.setItem('onboarding-v1','seen');
 const desktopInvoke=window.__TAURI_INTERNALS__.invoke;
 window.__TAURI_INTERNALS__.invoke=async(command,args={})=>{
+ if(command==='plugin:app|register_listener') {window.__mobileBack=args.handler.onmessage;return null;}
+ if(command==='plugin:app|remove_listener')return null;
+ if(command==='plugin:app|exit') {window.__fixture.exited=true;return null;}
  if(command==='plugin:mobile-host|register_listener') {window.__mobileEvent=args.handler.onmessage;return null;}
  if(command==='plugin:mobile-host|remove_listener')return null;
  if(command==='plugin:mobile-host|request'){
@@ -74,6 +77,13 @@ def main():
                         page.locator('.mobile-step-details summary').click()
                         page.locator('.mobile-home-action').click()
                         page.locator('.purpose').first.wait_for()
+                        page.locator('.purpose').first.click()
+                        page.locator('.mobile-tools button').first.click()
+                        page.locator('.purpose').first.wait_for()
+                        page.locator('.purpose').first.click()
+                        page.evaluate('window.__mobileBack({})')
+                        page.locator('.purpose').first.wait_for()
+                        assert not page.evaluate('window.__fixture.exited'), 'Back from a subpage must return home'
                         page.wait_for_timeout(400)
                     if entry=='release-index.html':
                         page.get_by_role('button',name='选择完整包或 rootfs 单个文件' if language=='zh' else 'Release or rootfs One file',exact=True).click()
