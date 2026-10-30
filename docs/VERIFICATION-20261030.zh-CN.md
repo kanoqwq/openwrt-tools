@@ -2,8 +2,8 @@
 
 ## 已完成
 
-- 本机 Windows 全套离线回归：492 项，83 项因平台或可选范围跳过，其余通过。
-- 本机 WSL/Linux、提供两边固件源码的离线回归：492 项，2 项平台不适用跳过，其余通过。使用临时文件系统和模拟传输，不连接真实设备。
+- 本机 Windows 全套离线回归：495 项，83 项因平台或可选范围跳过，其余通过。
+- 本机 WSL/Linux、提供两边固件源码的离线回归：495 项，2 项平台不适用跳过，其余通过。使用临时文件系统和模拟传输，不连接真实设备。
 - 独立仓库在 GitHub 的 Windows/Linux 冷检出 CI 通过；可选固件源码测试明确跳过。确认普通核心构建和测试不依赖父目录中的固件源码。
 - 两个父仓库的 Diff 组装接入测试各 5 项通过；公共工具保留 MU300 的独立导出功能，导出的后端含资源解析和 host 模块。
 - 新 Windows 冻结后端对历史畅行60完整包及 MU300 7.2.8 完整包的模拟传输回归通过：各自读取对应存储库；part/reinstall/image/boot 不触发 TF 探测，缺卡仍拒绝 TF。验证旧包内 storage.sh 助手已由正确系列的新实现接管。
@@ -18,15 +18,17 @@
 3. 目录别名与 Windows 8.3 短路径导致恢复记录的 legacy 路径无法重定位；仅在原目录属于当前系统且确实存在时解析真实别名，其他系统路径继续按原语法迁移。
 4. 两边机型差异统一通过输入小写 yes 确认；旧 MU300 入口接入相同确认，不在后续重复以型号列表拒绝。格式、设备身份、散列、容量和 NV 校验未跳过。
 
+5. 兼容 CLI 不再绕过统一机型确认和存储选择。实际 Windows 冻结后端对合成未知机型包验证：非 yes 拒绝、输入 yes 可继续；未连接设备。
+
 ## 未作的硬件验收
 
 没有安装/停止用户正在使用的控制端 App，没有真实目标 TF 格式化、userdata 缩容/扩容、GPT、boot、misc 或 NV 写入。本轮不能替代后续用户允许的实机安装验收。原有通话、蓝牙、功耗等设备功能不是本次安装器仓库抽取的硬件测试范围。
 
 ## 可追溯的公共构建
 
-- 本轮最终核心修复源提交：bb91656198669135e0457a4c66aae5233a892881；其后的验证文档/测试变更不改变编译输入。
-- 独立检出回归：https://github.com/kanoqwq/openwrt-tools/actions/runs/41057788754
-- Apple Silicon 原生构建：https://github.com/kanoqwq/openwrt-tools/actions/runs/41057793171
-- 本机最终 Android 发布：E5 父仓库 out/releases/20261030-openwrt-tools-unified-r2/。
+- 本轮最终核心修复源提交：f9cb4c389026432e593906fd1ba764940ce513e5；其后的验证文档/测试变更不改变编译输入。
+- 独立检出回归：https://github.com/kanoqwq/openwrt-tools/actions/runs/41062902331
+- Apple Silicon 原生构建：https://github.com/kanoqwq/openwrt-tools/actions/runs/41062906271
+- 本机最终 Android 发布：E5 父仓库 out/releases/20261030-openwrt-tools-release/。
 
 交付件必须继续匹配 sources() 和二进制摘要；本记录不允许绕过过期检查，也不声明以后任何版本永远不会出现兼容问题。
