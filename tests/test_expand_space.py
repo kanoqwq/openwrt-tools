@@ -112,7 +112,7 @@ class Workflow(unittest.TestCase):
         self.adapter.probe=Mock(return_value=self.device)
         self.bcb=bytes(2048)+fx.android_bc()+bytes(2016)
         self.adb.read=Mock(side_effect=lambda cmd:bytes(2048) if 'bs=512 skip=' in cmd else self.bcb)
-        self.adb.shell=Mock(return_value=str(32*fx.GIB))
+        self.adb.shell=Mock(side_effect=lambda cmd,**_:self.volume['source'] if cmd.startswith('readlink -f ') else str(32*fx.GIB))
         self.volume={'source':'/dev/block/mmcblk0p4','mapped_bytes':32*fx.GIB,'filesystem_bytes':32*fx.GIB,
                      'uuid':'55'*16,'filesystem':'ext4','mapping_overhead':0}
         self.tools={'openwrt-uninstall/tools/lib/fixture':b'elf'}
@@ -140,6 +140,12 @@ class Workflow(unittest.TestCase):
         with self.assertRaises(RecoveryRequired):self.plan()
         self.adb.call.assert_not_called()
 
+    def test_mount_alias_is_resolved_before_geometry_checks(self):
+        self.device['storage']['SOURCE']='/dev/block/by-name/userdata'
+        worker=self.plan()
+        self.assertFalse(worker.r['plan']['wipe'])
+        self.assertTrue(any(c.args[0]=='readlink -f /dev/block/by-name/userdata' for c in self.adb.shell.call_args_list))
+
     def test_explicit_reset_is_evidence_bound_and_not_automatic(self):
         self.volume['filesystem']='unsupported'
         with self.assertRaises(PreservationUnavailable) as caught:self.plan()
@@ -166,7 +172,7 @@ class Workflow(unittest.TestCase):
         self.adb.call.assert_not_called()
 
     def test_active_disconnected_worker_prevents_duplicate_write(self):
-        worker=self.plan();self.adb.shell.return_value='BUSY'
+        worker=self.plan();self.adb.shell.side_effect=None;self.adb.shell.return_value='BUSY'
         with self.assertRaisesRegex(RecoveryRequired,'still active'):worker.commit_gpt()
         self.adb.call.assert_not_called()
 
@@ -252,7 +258,8 @@ class Workflow(unittest.TestCase):
         # are written. No loop devices, Android or real partitions are used.
         for state in ('before','partial','foreign'):
             with self.subTest(state=state):
-                self.adb.read=Mock(side_effect=lambda cmd:bytes(2048) if 'bs=512 skip=' in cmd else self.bcb);self.adb.shell=Mock(return_value=str(32*fx.GIB))
+                self.adb.read=Mock(side_effect=lambda cmd:bytes(2048) if 'bs=512 skip=' in cmd else self.bcb)
+                self.adb.shell=Mock(side_effect=lambda cmd,**_:self.volume['source'] if cmd.startswith('readlink -f ') else str(32*fx.GIB))
                 worker=self.plan();remote=worker.ctx.directory/'remote';remote.mkdir()
                 disk=worker.ctx.directory/'disk';size=worker.ctx.directory/'sectors';size.write_text(str(fx.SECTORS))
                 with disk.open('wb') as f:

@@ -124,7 +124,7 @@ def prepare(adapter, device, authorize_reset=None):
     uninstall_bcb(control[:2048])
     from .boot_image import trial_control
     trial_control(control[2048:2080],device['slot'].removeprefix('_'))
-    source=device['storage']['SOURCE']
+    source=adapter.adb.shell('readlink -f '+shlex.quote(device['storage']['SOURCE']),root=True).strip()
     if not re.fullmatch(r'/dev/(?:block/)?(?:dm-\d+|mmcblk\d+p\d+|sd[a-z]+\d+)',source):
         raise RecoveryRequired('Android /data source is not a supported block mapping / Android /data 不是可确认的块设备映射')
     mapped=int(adapter.adb.shell('blockdev --getsize64 '+source,root=True).strip())
