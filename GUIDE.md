@@ -27,7 +27,7 @@ Linux、Intel Mac 或需要 Python 命令行入口时，可使用 **OpenWrt-Inst
 - **安装 OpenWrt**：首次安装到 TF 卡或独立内置分区。校验安装包，选择设备并检查，然后核对安装计划。
 - **更新 OpenWrt**：仅支持相同内核、相同 OpenWrt 系统版本的更新，保留已有设置和容量。**不支持跨内核、跨 OpenWrt 系统版本升级；如需更换，请先备份重要数据，再重新安装。**设备需运行 OpenWrt，电脑需连接它的网络，并提供管理地址和 SSH root 密码。
 - **继续未完成的安装**：选择原安装记录，接着完成中断的安装或 Android 重置后的续装。
-- **临时启动已安装的 OpenWrt**：从 Android 切换到已安装的 OpenWrt，仅本次启动生效，不会设为默认系统。完成后按提示重启。
+- **临时启动已安装的 OpenWrt**：从 Android 启动已有系统，不改变默认启动选择。正常只修改 misc；检测到启动镜像损坏或与系统盘布局不匹配时，会在原确认页展示启动修复计划。也可勾选“重建启动镜像”处理未被自动识别的启动失败。先备份另一槽 boot 和 misc，再用与现有模块版本匹配的包重建、写入并回读校验 boot，最后临时启动；不重装系统、不重新分区，不改动插件、配置或 NV。损坏的启动镜像不再意味着必须重装 OpenWrt。
 - **高级选项**：重装已有内置分区，或使用 userdata 镜像。重装会替换原 OpenWrt 系统和设置，保留 Android。**userdata 镜像是实验性功能，可能损坏 Android F2FS 文件系统**，建议优先选择 TF 卡或独立内置分区。
 
 连接多台设备时，请核对型号和序列号末四位，明确选择本次要操作的设备。
@@ -182,7 +182,7 @@ For Linux, Intel Macs or the Python command-line entry, run **OpenWrt-Installer.
 - **Install OpenWrt**: install to a TF card or an independent internal partition. Verify the package, select and inspect the device, then review the plan.
 - **Update OpenWrt**: update only with matching kernel and OpenWrt system versions, keeping settings and capacity. **Updates across kernels or OpenWrt system versions are not supported; back up important data and reinstall to change either.** OpenWrt must be running, and the computer must be connected to its network. Enter its management address and SSH root password.
 - **Continue an unfinished installation**: select the original record to resume an interrupted installation or continue after an Android reset.
-- **Boot installed OpenWrt once**: switch from Android to the installed OpenWrt for one boot, without changing the default system. Restart when prompted.
+- **Boot installed OpenWrt once**: start the existing system from Android without changing the default. A healthy boot only needs a misc change. A damaged image or storage-layout mismatch produces a repair plan on the same confirmation page; select “Rebuild boot image” for failures not detected automatically. Back up the opposite boot slot and misc, rebuild using a package matching the installed modules, write and verify boot, then start once. No reinstall, repartitioning, plugin/configuration replacement or NV write is performed.
 - **Advanced options**: reinstall an existing internal partition or use a userdata image. Reinstallation replaces OpenWrt and its settings while keeping Android. **Userdata image installation is experimental and may damage Android F2FS.** Prefer a TF card or an independent internal partition.
 
 With multiple devices connected, check the model and last four serial characters and select the intended device.

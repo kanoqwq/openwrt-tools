@@ -18,6 +18,7 @@ from . import gpt, storage as storage_io, host
 from .state import Pending, RecoveryRequired, NVConfirmationRequired, atomic_json, sha
 from .transport import Adb, push_chunks
 from .boot_image import boot_installed_e5, boot_installed_mu300
+from . import boot_recovery
 from .mu300_update import update_mu300
 from .diagnostics import DebugStream, traced
 from .model_compat import android_warning, runtime_warning, mu300_android, mu300_runtime, require_approval
@@ -94,7 +95,7 @@ class Adapter:
             self.legacy.default_hotspot_name = lambda:hotspot_name(self.package['profile'])
             # Old compatible package scripts must not retain their exact-hash
             # gate when selecting the already installed system.
-            self.legacy.boot_openwrt = lambda args:boot_installed_e5(vars(self.legacy), self.adb.read)
+            self.legacy.boot_openwrt = lambda args, repair=None:boot_installed_e5(vars(self.legacy), self.adb.read, repair=repair)
         else:
             self.legacy.package_root = lambda: self.root
             self.legacy._storage = storage_io
@@ -500,6 +501,22 @@ class Adapter:
                 # installers. A crash before the coordinator's next checkpoint
                 # must only wait for boot, never replay the full entrypoint.
                 return None
+            if method == 'boot':
+                info = record['plan'].get('boot_check')
+                actual = self.probe(record['device']['serial'], 'boot')
+                if (actual.get('cid') != record['device']['cid'] or actual.get('slot') != record['device']['slot']):
+                    raise RecoveryRequired('Device or Android slot changed / 设备身份或 Android 槽位发生变化')
+                if info is None:
+                    info, _ = boot_recovery.prepare(self, actual)
+                    if info['required']:
+                        raise RecoveryRequired('Review a new boot plan to confirm boot repair / 请重新检查临时启动计划，确认启动镜像修复')
+                if not info['required'] and boot_recovery.digest_device(self.adb, info['target']) != info['before_sha256']:
+                    raise RecoveryRequired('Boot changed since review; inspect again / 确认后启动镜像发生变化，请重新检查')
+                repair = (lambda:boot_recovery.repair(self, actual, info)) if info['required'] else None
+                self.stage('prepare')
+                if self.kind == 'mu300':
+                    return self.boot_mu300(a, repair=repair)
+                return self.legacy.boot_openwrt(a, repair=repair)
             # A whole initial run must never be replayed after a write started.
             # Explicit prepared records are the only entry into destructive resume.
             if any(not name.startswith('backup') for name in record['effects']) and not (self.kind == 'e5' and method == 'tf'):
@@ -507,8 +524,6 @@ class Adapter:
             self.backup(record['device'])
             self.stage('prepare')
             if self.kind == 'mu300':
-                if method == 'boot':
-                    return self.boot_mu300(a)
                 return self.legacy.install(a, self.root, json.loads((self.root/'desktop/manifest.json').read_text()))
             if method == 'tf':
                 return self.legacy.install_sd(a)
@@ -516,14 +531,12 @@ class Adapter:
                 return self.legacy.install(a)
             if method == 'reinstall':
                 return self.legacy.part_two_stage('reinstall', a)
-            if method == 'boot':
-                return self.legacy.boot_openwrt(a)
             if record['plan'].get('gap_start') is not None:
                 return self.e5_free(a)
             return self.legacy.install_part(a)
 
-    def boot_mu300(self,args):
-        return boot_installed_mu300(vars(self.legacy),self.legacy.Android(args),self.root)
+    def boot_mu300(self,args,*,repair=None):
+        return boot_installed_mu300(vars(self.legacy),self.legacy.Android(args),self.root,repair=repair)
 
     def e5_free(self, args):
         """Add a GPT entry in verified free space, then use the existing writer.

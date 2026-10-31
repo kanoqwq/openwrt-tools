@@ -11,7 +11,7 @@
 - **安装 OpenWrt**：首次安装到目标的 TF 卡或独立内置分区。先校验完整包，再检查设备、查看计划并确认。
 - **更新 OpenWrt**：目标先启动 OpenWrt，手机通过它的管理地址和当前 root 密码连接 SSH；保留设置、已有容量和本机固件。以最终兼容性检查为准。
 - **继续未完成的安装**：从本机保存的记录恢复；换手机后先导入完整恢复备份。
-- **临时启动已安装的 OpenWrt**：目标在 Android 中开放 ADB 并提供 root 后，按原流程选择临时启动，不改变默认启动选择。
+- **临时启动已安装的 OpenWrt**：目标 Android 开放 ADB 并提供 root 后，可启动已有系统。正常只修改 misc；启动镜像损坏或布局不匹配时，在同一确认页核对修复目标和内核版本，确认后备份并修复另一槽 boot，再临时启动。也可勾选“重建启动镜像”。保留系统、插件、配置和 NV，不重装或重新分区；使用与已安装模块版本匹配的完整包。
 - **高级选项**：重装内置分区、实验性 userdata 镜像、卸载并归还空间。镜像方式可能损坏 Android F2FS，使用前先阅读说明。
 - **安装记录管理**：查看机型、版本、状态、时间及占用空间；支持搜索、导出、导入和删除。
 
@@ -76,7 +76,7 @@ Install the APK and use the phone bottom navigation or tablet sidebar for Instal
 - **Install OpenWrt**: first installation onto the target TF card or independent internal partition. Verify the full release, inspect the target and review the plan before confirming.
 - **Update OpenWrt**: boot OpenWrt on the target and connect through its management address and current root password over SSH. Settings, existing size and device firmware are preserved, subject to the final compatibility check.
 - **Continue an unfinished installation**: resume a saved record. Import a complete recovery backup first when changing control phones.
-- **Boot installed OpenWrt once**: connect to the rooted target Android through ADB and follow its original one-time boot workflow without changing the default system.
+- **Boot installed OpenWrt once**: connect to the rooted target Android through ADB. A healthy boot changes only misc. If boot is damaged or the layout differs, review its target slot and kernel version on the same confirmation page, then authorize backup and repair before booting once. “Rebuild boot image” also handles undetected failures. Use a package matching the installed modules; keep the system, plugins, settings and NV without reinstalling or repartitioning.
 - **Advanced options**: reinstall the internal partition, use an experimental userdata image, or uninstall and return space. The image method can damage Android F2FS; read its explanation first.
 - **Installation records**: view model, version, status, date and storage; search, import, export or delete records.
 

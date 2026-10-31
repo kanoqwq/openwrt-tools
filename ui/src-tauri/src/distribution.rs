@@ -1,6 +1,14 @@
 //! Portable package discovery. No CWD search, downloads or device access.
 use std::path::{Path, PathBuf};
 
+pub fn backend_executable(root: &Path, backend: &str) -> std::io::Result<PathBuf> {
+    // On Windows canonicalize supplies a verbatim (\\?\ / \\?\UNC\) path.
+    // PyInstaller derives _MEIPASS from the launched executable: without this,
+    // a deep extraction path starts Python but fails on longer extension DLLs.
+    // Keep the package argument/CWD unchanged; only the executable needs this.
+    root.join(backend).canonicalize()
+}
+
 pub fn app_bundle(path: &Path) -> Option<&Path> {
     path.ancestors().find(|p| p.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("app")))
 }
@@ -99,6 +107,17 @@ mod tests {
     }
     impl Drop for Fixture {
         fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    }
+
+    #[test]
+    fn backend_launch_uses_canonical_native_path() {
+        let f = Fixture::new();
+        let root = f.package("下载 package", "desktop/manifest.json");
+        let path = backend_executable(&root, BACKEND).unwrap();
+        assert_eq!(path, root.join(BACKEND).canonicalize().unwrap());
+        #[cfg(windows)]
+        assert!(path.as_os_str().to_string_lossy().starts_with(r"\\?\"));
+        assert!(backend_executable(&root, "missing").is_err());
     }
 
     #[test]

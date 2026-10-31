@@ -135,26 +135,39 @@ class Ext4Evidence:
             raise ValueError('Installation evidence contains sparse or missing blocks')
         return b''.join(self.block(pointers[n]) for n in range(count))[:size]
 
-    def file(self, path):
+    def children(self, node):
+        content = self.contents(node,stat.S_IFDIR,256 << 10)
+        found = {}
+        at = 0
+        while at < len(content):
+            if len(content)-at < 8:
+                raise ValueError('Truncated OpenWrt directory')
+            number, length, namelen = struct.unpack_from('<IHB',content,at)
+            if (length < 8 or length % 4 or length > self.block_size-at%self.block_size or
+                    at+length > len(content) or namelen > length-8):
+                raise ValueError('Invalid OpenWrt directory entry')
+            name = content[at+8:at+8+namelen].decode('utf-8', 'surrogateescape')
+            if number:
+                if name in found:
+                    raise ValueError('Ambiguous OpenWrt directory entry')
+                found[name] = number
+            at += length
+        return found
+
+    def node(self, path):
         node = self.inode(2)
         for component in path.split('/'):
-            content = self.contents(node,stat.S_IFDIR,256 << 10)
-            found = []
-            at = 0
-            while at < len(content):
-                if len(content)-at < 8:
-                    raise ValueError('Truncated OpenWrt directory')
-                number, length, namelen = struct.unpack_from('<IHB',content,at)
-                if (length < 8 or length % 4 or length > self.block_size-at%self.block_size or
-                        at+length > len(content) or namelen > length-8):
-                    raise ValueError('Invalid OpenWrt directory entry')
-                if number and content[at+8:at+8+namelen] == component.encode():
-                    found.append(number)
-                at += length
-            if len(found) != 1:
+            found = self.children(node)
+            if component not in found:
                 raise ValueError('Missing or ambiguous installed-system marker / 安装标记缺失或存在重名: '+path)
-            node = self.inode(found[0])
-        return self.contents(node,stat.S_IFREG,4096)
+            node = self.inode(found[component])
+        return node
+
+    def directory(self, path):
+        return self.children(self.node(path))
+
+    def file(self, path, limit=4096):
+        return self.contents(self.node(path),stat.S_IFREG,limit)
 
 
 def inspect_installation(adapter, device, root, *, boot_backup=None, recovery_store=None):

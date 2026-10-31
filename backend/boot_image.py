@@ -63,16 +63,18 @@ def trial_control(before,slot):
     return bytes(result)
 
 
-def boot_installed_mu300(api,android,root):
-    """Select the installed opposite slot without root mounts or boot writes."""
+def boot_installed_mu300(api,android,root,*,repair=None):
+    """Select the opposite slot; an explicitly confirmed repair may precede it."""
     if android.slot not in ('a','b') or android.linux!=('b' if android.slot=='a' else 'a'):
         raise ValueError('Invalid Android/Linux slot selection')
     target='/dev/block/by-name/boot_'+android.linux
-    installed=inspect_linux_boot(android.read,int(android.shell('blockdev --getsize64 '+target).strip()),'mu300',android.linux)
+    installed = None
+    if repair is None:
+        installed=inspect_linux_boot(android.read,int(android.shell('blockdev --getsize64 '+target).strip()),'mu300',android.linux)
     current=android.read('dd if=/dev/block/by-name/boot_'+android.slot+' bs=512 count=8 2>/dev/null')
     if len(current)!=4096 or current[:8]!=b'ANDROID!':
         raise ValueError('Current Android boot header is incomplete / 当前 Android 启动镜像头不完整')
-    if hashlib.sha256(current).hexdigest()==installed['header_sha256']:
+    if installed and hashlib.sha256(current).hexdigest()==installed['header_sha256']:
         raise ValueError('Opposite slot has the same Android boot header; no distinct Linux boot identified / 另一槽与当前 Android 启动镜像头相同，未识别到独立 Linux 镜像')
     before=android.live()
     wanted=trial_control(before,android.slot)
@@ -81,6 +83,11 @@ def boot_installed_mu300(api,android,root):
         android.push(source,name)
     android.shell('chmod 755 '+android.bb)
     android.run('"$BB" sh "$P/android-bootchain.sh" check')
+    if repair is not None:
+        repair()
+        installed=inspect_linux_boot(android.read,int(android.shell('blockdev --getsize64 '+target).strip()),'mu300',android.linux)
+    if hashlib.sha256(current).hexdigest()==installed['header_sha256']:
+        raise ValueError('Opposite slot has the same Android boot header; no distinct Linux boot identified / 另一槽与当前 Android 启动镜像头相同，未识别到独立 Linux 镜像')
     android.put(wanted,'misc-trial.bin')
     expected=hashlib.sha256(before).hexdigest();checksum=hashlib.sha256(wanted).hexdigest()
     body='''set -o pipefail
@@ -110,14 +117,18 @@ fi
                           'Device is restarting; default-boot settings are unchanged / 设备正在重启，原默认启动设置保持不变。')
 
 
-def boot_installed_e5(api, read):
+def boot_installed_e5(api, read, *, repair=None):
     """Shared CLI/GUI trial selection, independent of the current package hash."""
     api['steps'](2)
     api['find_adb']()
     api['android_checks']()
     _, slot = api['current_slots']()
-    inspect_linux_boot(read,api['device_size']('/dev/block/by-name/boot_' + slot),'e5',slot)
+    if repair is None:
+        inspect_linux_boot(read,api['device_size']('/dev/block/by-name/boot_' + slot),'e5',slot)
     api['bootchain']('check')
+    if repair is not None:
+        repair()
+        inspect_linux_boot(read,api['device_size']('/dev/block/by-name/boot_' + slot),'e5',slot)
     api['arm_slot_b']()
     api['say']('正在临时启动 OpenWrt（未更改默认设置）/ booting OpenWrt without changing defaults')
     api['adb']('reboot')

@@ -202,7 +202,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let backend = "tools/macos/backend/openwrt-backend";
             #[cfg(not(target_os = "macos"))]
             let backend = "tools/backend/openwrt-backend.exe";
-            let mut process = Command::new(root.join(backend));
+            let mut process = Command::new(distribution::backend_executable(&root, backend)?);
             process.args(["--package-root", &root.to_string_lossy(), "--data-dir", &setup_state.directory.to_string_lossy()]);
             process.current_dir(&root);
             process.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());

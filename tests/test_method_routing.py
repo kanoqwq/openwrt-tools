@@ -158,13 +158,14 @@ class MethodRouting(unittest.TestCase):
             for method in ('tf','part','reinstall','image','boot','update'):
                 with self.subTest(kind=kind,method=method), tempfile.TemporaryDirectory() as directory:
                     root=Path(directory);(root/'desktop').mkdir();(root/'desktop/manifest.json').write_text('{}')
-                    record=Store(root/'app').create({'path':directory,'adapter':kind},{'serial':SERIAL},{'method':method},{'method':method,'openwrt_bytes':4<<30})
+                    record=Store(root/'app').create({'path':directory,'adapter':kind},{'serial':SERIAL,'cid':CID,'slot':'_a'},{'method':method},{'method':method,'openwrt_bytes':4<<30})
                     a=self.adapter(kind);a.root=root;a.ctx=Context(Store(root/'app'),record,lambda *_:None)
-                    a.probe=Mock();a.backup=Mock();a.stage=Mock();a.update_e5=Mock();a.boot_mu300=Mock()
+                    a.probe=Mock(return_value={'cid':CID,'slot':'_a'});a.backup=Mock();a.stage=Mock();a.update_e5=Mock();a.boot_mu300=Mock()
+                    record['plan']['boot_check']={'required':False,'target':'/dev/block/by-name/boot_b','before_sha256':'f'*64}
                     a.legacy=SimpleNamespace(**{n:Mock() for n in ('install_sd','install','part_two_stage','boot_openwrt','install_part','update')})
                     flags=args_for(record,root)
                     self.assertEqual(sum(bool(getattr(flags,n)) for n in ('tf','part','reinstall_part','data','boot_openwrt')),0 if method=='update' else 1)
-                    with patch('backend.adapter.update_mu300') as shared_update:
+                    with patch('backend.adapter.update_mu300') as shared_update, patch('backend.boot_recovery.digest_device',return_value='f'*64):
                         a.execute()
                     if method=='update':
                         if kind=='e5':a.update_e5.assert_called_once();shared_update.assert_not_called()

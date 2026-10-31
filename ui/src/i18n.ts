@@ -1,5 +1,8 @@
 export const strings = {
   zh: {
+    bootRepairOption:'重建启动镜像（启动失败时使用）', bootRepairOptionHelp:'通常会自动识别损坏或布局不匹配；若仍无法启动，可勾选此项。只修复启动，不重装或清空现有系统。',
+    bootRepairTitle:'此次需要先修复启动镜像', bootRepairImpact:'将先备份并重建另一槽的 boot，校验后临时启动。保留 OpenWrt 系统、插件、配置、NV 和 Android 数据，不重新分区；请使用与已安装内核模块配套的完整包。',
+    bootRepairBackup:'备份原启动镜像与 misc', bootRepairWrite:'修复并回读校验启动镜像', bootRepairKernel:'修复内核版本', bootRepairLayout:'现有安装布局', bootRepairAccept:'我已核对修复目标，允许备份并修复另一槽的 boot，然后临时启动；保留现有系统和数据。',
     modelApproved:'已确认使用不匹配机型的安装包', modelMismatch:'安装包与设备机型不匹配', modelMismatchDesc:'可以继续使用此包；请先核对下面的机型并明确确认。',
     modelPackage:'安装包机型：', modelDetected:'检测到设备：', modelRisk:'屏幕、触摸、充电或启动可能不兼容。此确认只适用于当前设备、安装包和操作；分区及数据校验仍会执行。',
     modelYes:'输入小写 yes 后继续', modelContinue:'仍使用此安装包', modelCancel:'返回选择安装包',
@@ -77,6 +80,9 @@ export const strings = {
     noBackend:'安装器启动失败。请完整解压安装包，再运行 OpenWrt-Installer.exe。', error:'操作未完成', elapsed:'阶段用时', bytes:'已传输', speed:'速度', packageHint:'请完整解压安装包；载荷校验通过后才能操作设备。',
   },
   en: {
+    bootRepairOption:'Rebuild boot image (for a failed boot)', bootRepairOptionHelp:'Damage and layout mismatches are normally detected automatically. Select this if boot still fails. Repairs boot without reinstalling or erasing the installed system.',
+    bootRepairTitle:'Boot image repair is needed first', bootRepairImpact:'Back up and rebuild the opposite boot slot, verify it, then boot once. Keep OpenWrt, plugins, settings, NV and Android data; do not repartition. Use a full package matching the installed kernel modules.',
+    bootRepairBackup:'Backing up original boot and misc', bootRepairWrite:'Repairing boot and verifying readback', bootRepairKernel:'Repair kernel version', bootRepairLayout:'Installed layout', bootRepairAccept:'I checked the target and authorize backing up and repairing the opposite boot slot, then booting it once, while keeping the installed system and data.',
     modelApproved:'Model exception confirmed for this package', modelMismatch:'Package and device models differ', modelMismatchDesc:'You may continue with this package. Check the models below before confirming.',
     modelPackage:'Package model:', modelDetected:'Detected device:', modelRisk:'Display, touch, charging or boot may be incompatible. This exception applies only to this device, package and operation; partition and data checks still run.',
     modelYes:'Type lowercase yes to continue', modelContinue:'Use this package anyway', modelCancel:'Choose another package',

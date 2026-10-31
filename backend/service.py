@@ -24,6 +24,8 @@ from .uninstall import Uninstaller, prepare as prepare_uninstall, persist as per
 from .uninstall_growth import PreservationUnavailable
 from .online_shrink import OnlineShrink, OnlineDecision, inspect as inspect_online, allocation as online_allocation, fallback_plan
 from .model_compat import decision as model_decision, runtime_warning, mu300_runtime, require_approval
+from .ssh_runtime import HostRuntimeError, load_ssh
+from . import boot_recovery
 
 METHODS = {'tf', 'part', 'reinstall', 'image', 'boot', 'update', 'uninstall'}
 
@@ -288,6 +290,7 @@ class Service:
             if not self.package:
                 raise ValueError('Verify package first')
             choices = p['choices']
+            boot_info = boot_image = None
             if choices.get('method') == 'update':
                 device = self.probe_update(p)
             elif choices.get('method') == 'uninstall':
@@ -325,6 +328,8 @@ class Service:
                             'model':device['model'],'serial_hint':device['serial'][-4:]}
                 self.uninstall_reset_prompt = None
             else:
+                if choices.get('method') == 'boot':
+                    boot_info, boot_image = boot_recovery.prepare(plan_adapter, device, force=choices.get('repair_boot') is True)
                 if (choices.get('method') == 'part' and not device.get('existing') and
                         not choices.get('wipe') and choices.get('shrink_strategy') != 'format' and
                         type(choices.get('size_gib',4)) in (float,int) and
@@ -333,12 +338,16 @@ class Service:
                                 for _,n in device.get('gpt',{}).get('safe_gaps',[]))):
                     device['online_shrink'] = inspect_online(plan_adapter,device)
                 plan = plan_install(self.package, device, choices)
+                if boot_info:
+                    plan['boot_check'] = boot_info
             record = self.store.create(self.package, device, choices, plan)
             if model_approval:
                 record['model_override'] = model_approval
             record['data_directory'] = str(self.store.directory(record['id']))
             record['secrets'] = {'wifi_key': secrets.token_urlsafe(12)}
             self.store.save(record)
+            if boot_info:
+                boot_recovery.persist(Context(self.store, record, lambda *_:None), boot_info, boot_image)
             if choices.get('method') == 'uninstall':
                 persist_uninstall(Context(self.store, record, lambda *_:None), uninstall_metadata, uninstall_files)
             return self.public(record)
@@ -472,7 +481,7 @@ class Service:
             self.store.save(record)
 
     def probe_update(self, p):
-        import paramiko
+        paramiko = load_ssh()
         if not self.package:
             raise ValueError('Verify package first')
         choices = p.get('choices', p)
@@ -522,6 +531,9 @@ class Service:
                     locks.enter_context(DeviceLock(self.store.base, identity))
                 if r['choices']['method'] == 'uninstall':
                     return Uninstaller(self, context, adapter).run()
+                # Verification is required by every install/boot path. Check
+                # local native dependencies before shrink, backups or misc.
+                load_ssh()
                 if (r['plan'].get('shrink_strategy') == 'online-f2fs' and
                         r.get('online_shrink',{}).get('state') != 'verified'):
                     try:
@@ -570,6 +582,7 @@ class Service:
                             r.get('secrets', {}).get('wifi_key')):
                 if private: message = message.replace(private, '[redacted]')
             r['error'] = {'code': ('recovery_required' if isinstance(error, RecoveryRequired) else
+                                   'host_runtime_unavailable' if isinstance(error, HostRuntimeError) else
                                    'capacity_mismatch' if isinstance(error, FilesystemCapacityError) else 'operation_failed'),
                           'message': message,
                           'retryable': not r['unsafe'] or bool(r.get('legacy')) or r.get('online_shrink',{}).get('state') in ('prepared','started','gpt-committed') or r['choices']['method'] == 'uninstall'}
@@ -649,8 +662,7 @@ class Service:
         r = context.record
         # These entrypoints send their own reboot request. The other install
         # paths finish after verified writes and explicitly leave reboot to the user.
-        manual = r['choices']['method'] != 'update' and not (
-            r['package']['adapter'] == 'e5' and r['choices']['method'] == 'boot')
+        manual = r['choices']['method'] not in ('update','boot')
         manual = manual and not r.get('openwrt_confirmed',False) and not r.get('adb_reboot_requested',False)
         host = r['choices'].get('host') or ('192.168.9.1' if r['package']['adapter'] == 'e5' else
                 '192.168.77.1')
@@ -659,7 +671,7 @@ class Service:
                       verification_error=error, connection_state=connection_state)
 
     def wait_openwrt(self, context, adapter):
-        import paramiko
+        paramiko = load_ssh()
         r = context.record
         host = r['choices'].get('host') or ('192.168.9.1' if r['package']['adapter'] == 'e5' else
                 '192.168.77.1')

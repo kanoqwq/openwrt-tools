@@ -122,7 +122,7 @@ class FlowBoundaries(unittest.TestCase):
     def test_final_wait_distinguishes_manual_restart_from_requested_reboot(self):
         for kind, method, manual in [('e5','reinstall',True), ('e5','part',True),
                                      ('e5','tf',True), ('e5','image',True), ('e5','boot',False),
-                                     ('e5','update',False), ('mu300','boot',True),
+                                     ('e5','update',False), ('mu300','boot',False),
                                      ('mu300','reinstall',True), ('mu300','update',False)]:
             with self.subTest(adapter=kind, method=method):
                 self.record.update(package={**PACKAGE,'adapter':kind},

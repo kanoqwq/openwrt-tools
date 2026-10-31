@@ -20,6 +20,7 @@ def sources():
     paths = [HERE/n for n in ('backend_entry.py','build.py','package_gui.py','platform-tools.json','platform-tools-macos.json','GUIDE.md','ota-tool.py','stage-ota.py','build-ota.py','ota-requirements.txt')]
     paths += list((HERE/'backend').glob('*.py'))
     paths += [HERE/'resources.py', HERE/'release-index.py']
+    paths += [HERE/'mobile/GUIDE.md']
     paths += [p for p in (HERE/'runtime').rglob('*') if p.is_file() and '__pycache__' not in p.parts]
     paths += [HERE/'device'/n for n in ('f2fs-online.c','test-f2fs-online.c','f2fs-online-arm64','build.json')]
     paths += [HERE/'build-online-helper.py']
