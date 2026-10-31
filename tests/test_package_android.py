@@ -68,7 +68,7 @@ class PortableAndroidFingerprint(unittest.TestCase):
         source=runpy.run_path(str(ROOT/'build-android.py'))['sources']
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
-            names=('build-android.py','release-index.py','backend/main.py','mobile/App.kt',
+            names=('build-android.py','release-index.py','backend/main.py','mobile/App.kt','mobile/GUIDE.md',
                    'mobile/gen/gradlew.bat','mobile/gen/proguard-rules.pro',
                    'ui/package.json','ui/package-lock.json','ui/vite.config.ts','ui/index.html',
                    'ui/diff.html','ui/ota.html','ui/release-index.html')

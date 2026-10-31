@@ -25,7 +25,7 @@ def sources():
                 files.append(p)
     files += [HERE/'ui'/name for name in ('package.json','package-lock.json','vite.config.ts','index.html','diff.html','ota.html','release-index.html')]
     shared=runpy.run_path(str(HERE/'package_gui.py'))['sources']()
-    return dict(shared,**{os.path.relpath(p,HERE).replace('\\','/'):hashlib.sha256(p.read_bytes().replace(b'\r\n',b'\n') if p.suffix in {'.py','.kt','.kts','.rs','.toml','.json','.ts','.tsx','.html','.css','.xml','.properties','.gradle','.bat','.pro'} else p.read_bytes()).hexdigest() for p in sorted(set(files))})
+    return dict(shared,**{os.path.relpath(p,HERE).replace('\\','/'):hashlib.sha256(p.read_bytes().replace(b'\r\n',b'\n') if p.suffix in {'.py','.kt','.kts','.rs','.toml','.json','.ts','.tsx','.html','.css','.xml','.properties','.gradle','.bat','.pro','.md'} else p.read_bytes()).hexdigest() for p in sorted(set(files))})
 
 
 def main():
