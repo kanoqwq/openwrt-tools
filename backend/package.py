@@ -91,5 +91,5 @@ def inspect_package(directory):
 
 
 def hotspot_name(profile):
-    names = {'e5':'E5','t551m':'T551M','m8':'M8','t512n':'T512N','yuanhang41s':'Yuanhang41S','k1':'K1','lym10k':'LYM-10K','changxing60':'Changxing60'}
+    names = {'e5':'E5','t551m':'T551M','m8':'M8','t512n':'T512N','yuanhang41s':'Yuanhang41S','k1':'K1','lym10k':'LYM-10K','changxing60':'Changxing60','y60':'Y60'}
     return names.get(profile,profile)+'-OpenWrt'

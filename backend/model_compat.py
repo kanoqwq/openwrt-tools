@@ -6,7 +6,7 @@ import secrets
 import time
 
 BOARDS = {'k1': 'ums9157_2h10', 'yuanhang41s': 'P720S11',
-          'lym10k': 'RY5G', 'changxing60': 'P720S20'}
+          'lym10k': 'RY5G', 'changxing60': 'P720S20', 'y60': 'CP23NV3'}
 
 
 def android_warning(profile, model, board):

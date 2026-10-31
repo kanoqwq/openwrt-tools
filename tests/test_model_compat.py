@@ -16,6 +16,12 @@ from backend.state import Context, Store
 
 
 class ModelCompatibility(unittest.TestCase):
+    def test_y60_uses_android_device_identity_not_board_design_name(self):
+        profile = {'profile': 'y60', 'android_models': ['CP23NV3']}
+        self.assertIsNone(android_warning(profile, 'CP23NV3', 'CP23NV3'))
+        self.assertIsNotNone(android_warning(profile, 'CP23NV3', '3292SG'))
+        self.assertIsNotNone(android_warning(profile, 'angelcare K1', 'ums9157_2h10'))
+
     def setUp(self):
         self.package = {'adapter':'e5','profile':'m8','layout':'e5root-ext4',
                         'kernel':'v2','payloads':{'boot':'a'*64},'path':'.'}
