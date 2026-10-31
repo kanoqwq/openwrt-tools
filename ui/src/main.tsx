@@ -489,7 +489,7 @@ function App() {
     <Suspense fallback={<div className="help-loading" role="status"><LoaderCircle size={17} className="spin"/>{t.running}</div>}>{helpOpen && <HelpCenter language={lang} open={helpOpen} onOpenChange={setHelpOpen} initialTopic={helpTopic} onGuide={showGuide}/>}
     {guideOpen && <GettingStarted language={lang} open={guideOpen} onOpenChange={changeGuide}/>}</Suspense>
     {waitingOnline && !onlineDismissed && <Dialog open onOpenChange={open => {if (!open) {setOnlineDismissed(true);setOnlineInput('');}}}>
-      <DialogContent closeLabel={t.onlineCancel}>
+      <DialogContent className="confirmation-dialog" closeLabel={t.onlineCancel}>
         <div className="dialog-heading"><DialogTitle>{t.onlineFallbackTitle}</DialogTitle><DialogDescription>{t.onlineFallbackDesc}</DialogDescription></div>
         <div className="scroll-area"><p className="error-message">{tx?.online_fallback?.reason}</p><label>yes<input value={onlineInput} onChange={e => setOnlineInput(e.target.value)} autoComplete="off" spellCheck={false} placeholder="yes"/></label></div>
         <div className="dialog-footer"><Button variant="outline" onClick={() => {setOnlineDismissed(true);setOnlineInput('');}}>{t.onlineCancel}</Button><Button variant="destructive" disabled={busy || onlineInput !== 'yes'} onClick={() => void task(async () => {
@@ -499,27 +499,29 @@ function App() {
       </DialogContent>
     </Dialog>}
     {modelPrompt && <Dialog open onOpenChange={open => {if (!open && !busy) {setModelPrompt(undefined);setModelInput('');}}}>
-      <DialogContent closeLabel={t.modelCancel}>
+      <DialogContent className="confirmation-dialog" closeLabel={t.modelCancel}>
         <div className="dialog-heading"><DialogTitle>{t.modelMismatch}</DialogTitle><DialogDescription>{t.modelMismatchDesc}</DialogDescription></div>
         <div className="scroll-area">
-          <p><strong>{t.modelPackage}</strong> {modelPrompt.warning.expected_profile} · {modelPrompt.warning.expected_models.join(', ')} {modelPrompt.warning.expected_board || ''}</p>
-          <p><strong>{t.modelDetected}</strong> {modelPrompt.warning.actual_model} {modelPrompt.warning.actual_board || ''} · ••••{modelPrompt.serial_hint}</p>
-          <p className="error-message">{t.modelRisk}</p>
+          <dl className="confirmation-facts">
+            <div><dt>{t.modelPackage}</dt><dd>{Array.from(new Set([modelPrompt.warning.expected_profile,...modelPrompt.warning.expected_models,modelPrompt.warning.expected_board].filter(Boolean))).join(' · ')}</dd></div>
+            <div><dt>{t.modelDetected}</dt><dd>{[modelPrompt.warning.actual_model,modelPrompt.warning.actual_board].filter(Boolean).join(' · ')} <span className="confirmation-serial">· ••••{modelPrompt.serial_hint}</span></dd></div>
+          </dl>
+          <p className="confirmation-warning"><CircleAlert size={18} aria-hidden="true"/><span>{t.modelRisk}</span></p>
           <label>{t.modelYes}<input disabled={busy} value={modelInput} onChange={e => setModelInput(e.target.value)} autoComplete="off" spellCheck={false} placeholder="yes"/></label>
         </div>
         <div className="dialog-footer"><Button variant="outline" disabled={busy} onClick={() => {setModelPrompt(undefined);setModelInput('');}}>{t.modelCancel}</Button><Button variant="destructive" disabled={busy || modelInput !== 'yes'} onClick={() => void plan(modelPendingReset,modelPrompt.model_token)}>{busy && <LoaderCircle size={16} className="spin"/>}{t.modelContinue}</Button></div>
       </DialogContent>
     </Dialog>}
     {waitingNV && !nvDismissed && <Dialog open onOpenChange={open => {if (!open) setNvDismissed(true);}}>
-      <DialogContent closeLabel={t.nvRecoveryCancel}>
+      <DialogContent className="confirmation-dialog" closeLabel={t.nvRecoveryCancel}>
         <div className="dialog-heading"><DialogTitle>{t.nvRecovery}</DialogTitle><DialogDescription>{t.nvRecoveryDesc}</DialogDescription></div>
         <div className="scroll-area"><p className="error-message">{tx?.nv_recovery?.reason}</p><label>{t.nvRecoveryYes}<input value={nvInput} onChange={e => setNvInput(e.target.value)} autoComplete="off" spellCheck={false} placeholder="yes"/></label></div>
         <div className="dialog-footer"><Button variant="outline" onClick={() => setNvDismissed(true)}>{t.nvRecoveryCancel}</Button><Button disabled={busy || nvInput !== 'yes'} onClick={() => {void start('retry',tx,'yes');setNvInput('');}}>{t.nvRecoveryYes}</Button></div>
       </DialogContent>
     </Dialog>}
-    {waitingExpand && !expandDismissed && <Dialog open onOpenChange={open=>{if(!open)setExpandDismissed(true);}}><DialogContent closeLabel={t.expandResetLater}><div className="dialog-heading"><DialogTitle>{t.expandResetQuestion}</DialogTitle><DialogDescription>{t.expandResetExplain}</DialogDescription></div><div className="scroll-area"><p className="error-message">{tx?.expand_reset_offer?.reason}</p><label>{t.expandResetYes}<input value={resetInput} onChange={e=>setResetInput(e.target.value)} placeholder="yes" autoComplete="off" spellCheck={false}/></label></div><div className="dialog-footer"><Button variant="outline" onClick={()=>setExpandDismissed(true)}>{t.expandResetLater}</Button><Button variant="destructive" disabled={busy || resetInput !== 'yes'} onClick={()=>void task(async()=>{const value=await request<Transaction>('expand_reset',{transaction:tx?.id,nonce:tx?.expand_reset_offer?.nonce,confirmation:resetInput});acceptTransaction(value,false);setAccepted(false);setPlanOrigin('progress');setView('plan');})}>{t.expandResetChoose}</Button></div></DialogContent></Dialog>}
+    {waitingExpand && !expandDismissed && <Dialog open onOpenChange={open=>{if(!open)setExpandDismissed(true);}}><DialogContent className="confirmation-dialog" closeLabel={t.expandResetLater}><div className="dialog-heading"><DialogTitle>{t.expandResetQuestion}</DialogTitle><DialogDescription>{t.expandResetExplain}</DialogDescription></div><div className="scroll-area"><p className="error-message">{tx?.expand_reset_offer?.reason}</p><label>{t.expandResetYes}<input value={resetInput} onChange={e=>setResetInput(e.target.value)} placeholder="yes" autoComplete="off" spellCheck={false}/></label></div><div className="dialog-footer"><Button variant="outline" onClick={()=>setExpandDismissed(true)}>{t.expandResetLater}</Button><Button variant="destructive" disabled={busy || resetInput !== 'yes'} onClick={()=>void task(async()=>{const value=await request<Transaction>('expand_reset',{transaction:tx?.id,nonce:tx?.expand_reset_offer?.nonce,confirmation:resetInput});acceptTransaction(value,false);setAccepted(false);setPlanOrigin('progress');setView('plan');})}>{t.expandResetChoose}</Button></div></DialogContent></Dialog>}
     {resetPrompt && <Dialog open onOpenChange={open => {if (!open && !busy) setResetPrompt(undefined);}}>
-      <DialogContent closeLabel={help.close} className="removal-reset-dialog">
+      <DialogContent closeLabel={help.close} className="confirmation-dialog removal-reset-dialog">
         <div className="dialog-heading"><DialogTitle>{resetPrompt.operation === 'expand' ? t.expandResetQuestion : t.uninstallResetQuestion}</DialogTitle><DialogDescription>{resetPrompt.model} · ••••{resetPrompt.serial_hint}</DialogDescription></div>
         <div className="reset-choice-body scroll-area"><div className="alert danger"><CircleAlert size={20}/><div><p className="error-message">{resetPrompt.reason}</p><p>{resetPrompt.operation === 'expand' ? t.expandResetExplain : t.uninstallResetExplanation}</p>{resetPrompt.operation === 'expand' && <label>{t.expandResetYes}<input value={resetInput} onChange={e=>setResetInput(e.target.value)} placeholder="yes" autoComplete="off" spellCheck={false}/></label>}</div></div></div>
         <div className="dialog-footer"><Button disabled={busy} variant="outline" onClick={() => setResetPrompt(undefined)}>{resetPrompt.operation === 'expand' ? t.expandResetLater : t.uninstallCancel}</Button><Button disabled={busy || resetPrompt.operation === 'expand' && resetInput !== 'yes'} variant="destructive" onClick={() => plan(resetPrompt.reset_token,resetPrompt.model_token,'yes')}>{resetPrompt.operation === 'expand' ? t.expandResetChoose : t.uninstallChooseReset}</Button></div>

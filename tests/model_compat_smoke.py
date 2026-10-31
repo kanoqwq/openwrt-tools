@@ -2,6 +2,7 @@
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 from ui_smoke import BRIDGE, fixture_context, layout, settle
+from android_ui_smoke import MOBILE
 
 WARNING = r'''
 localStorage.setItem('onboarding-v1','seen');
@@ -24,9 +25,16 @@ window.__TAURI_INTERNALS__.invoke=async(command,args={})=>{
 def main():
     with sync_playwright() as p:
         browser=p.chromium.launch()
-        for language in ('zh','en'):
-            context=fixture_context(browser,viewport={'width':800,'height':650})
-            context.add_init_script(BRIDGE+WARNING+f"localStorage.setItem('language','{language}');")
+        for language,mobile,width,height in (
+            (language,mobile,width,height)
+            for language in ('zh','en')
+            for mobile,width,height in ((False,1280,900),(False,800,650),(False,640,420),
+                                        (True,360,740),(True,844,390))):
+            options={'viewport':{'width':width,'height':height}}
+            if mobile:options.update(user_agent='Android 14',is_mobile=True,has_touch=True)
+            context=fixture_context(browser,**options)
+            bridge=BRIDGE+WARNING+(MOBILE.removeprefix(BRIDGE) if mobile else '')
+            context.add_init_script(bridge+f"localStorage.setItem('language','{language}');localStorage.setItem('theme','{'dark' if language=='zh' else 'light'}');")
             page=context.new_page();errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
             page.goto('http://127.0.0.1:1420');zh=language=='zh'
             page.get_by_role('button',name='安装 OpenWrt' if zh else 'Install OpenWrt',exact=False).click()
@@ -36,6 +44,26 @@ def main():
             review=page.get_by_role('button',name='查看安装计划' if zh else 'Review installation plan',exact=True)
             review.click();dialog=page.get_by_role('dialog');dialog.wait_for();settle(page)
             dialog.get_by_text('E5-like hardware',exact=False).wait_for()
+            boxes=dialog.evaluate('''el=>{
+              const rect=el.getBoundingClientRect(),body=el.querySelector(':scope>.scroll-area'),
+                footer=el.querySelector('.dialog-footer'),label=el.querySelector('label'),input=el.querySelector('input');
+              const b=body.getBoundingClientRect(),f=footer.getBoundingClientRect(),i=input.getBoundingClientRect();
+              return {x:rect.x,y:rect.y,right:rect.right,bottom:rect.bottom,width:rect.width,height:rect.height,
+                bodyLeft:body.firstElementChild.getBoundingClientRect().left-rect.left,footerBottom:f.bottom,footerGap:f.top-b.bottom,
+                outer:el.scrollWidth,inner:el.clientWidth,inputWidth:i.width,
+                labelDirection:getComputedStyle(label).flexDirection,bodyOverflow:getComputedStyle(body).overflowY};
+            }''')
+            assert boxes['x']>=0 and boxes['y']>=0 and boxes['right']<=width and boxes['bottom']<=height,boxes
+            assert boxes['outer']<=boxes['inner']+1 and boxes['bodyLeft']>=20,boxes
+            assert abs(boxes['bottom']-boxes['footerBottom'])<=2 and boxes['footerGap']<=2,boxes
+            assert boxes['labelDirection']=='column' and boxes['inputWidth']>200 and boxes['bodyOverflow']=='auto',boxes
+            if not mobile and height==900:assert boxes['width']<=640 and boxes['height']<600,boxes
+            for button in dialog.locator('.dialog-footer button').all():
+                r=button.bounding_box();assert r['y']>=0 and r['y']+r['height']<=height and r['height']>=40,r
+            if language=='zh' and width in (1280,360):
+                ROOT=Path(__file__).resolve().parents[1]
+                (ROOT/'verification').mkdir(exist_ok=True)
+                page.screenshot(path=str(ROOT/'verification'/f'model-warning-{width}.png'))
             proceed=dialog.get_by_role('button',name='仍使用此安装包' if zh else 'Use this package anyway',exact=True)
             self_input=dialog.locator('input')
             for text in ('','YES',' yes','yes '):
@@ -44,7 +72,8 @@ def main():
             dialog.locator('.dialog-footer').get_by_role('button',name='返回选择安装包' if zh else 'Choose another package',exact=True).click()
             assert not [c for c in page.evaluate('window.__fixture.calls') if c['command']=='start']
             review.click();dialog.wait_for();assert self_input.input_value()==''
-            self_input.fill('yes');proceed.click();settle(page);layout(page)
+            self_input.fill('yes');proceed.click();settle(page)
+            if not mobile and height>=650:layout(page)
             page.get_by_text('已确认使用不匹配机型的安装包' if zh else 'Model exception confirmed for this package',exact=True).wait_for()
             assert page.get_by_role('button',name='确认并开始' if zh else 'Confirm and start',exact=True).is_disabled()
             plans=[c for c in page.evaluate('window.__fixture.calls') if c['command']=='plan']
@@ -53,7 +82,7 @@ def main():
             assert not errors,errors
             context.close()
         browser.close()
-    print('PASS: zh/en model warning, exact yes, cancel/reopen, bounded request and separate final confirmation')
+    print('PASS: 10 desktop/mobile model-warning layouts, zh/en themes, exact yes, cancel/reopen and separate final confirmation')
 
 
 if __name__=='__main__':main()

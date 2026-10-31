@@ -239,6 +239,24 @@ input:not([type=checkbox]):hover,select:hover {border-color:hsl(var(--primary)/.
 .dialog-close {position:absolute;right:18px;top:18px;padding:7px;border-radius:6px;color:hsl(var(--muted-foreground));}
 .dialog-close:hover {background:hsl(var(--muted));color:hsl(var(--foreground));}
 .dialog-footer {flex-shrink:0;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 24px;border-top:1px solid hsl(var(--border));}
+.confirmation-dialog{width:min(600px,calc(100vw - 32px));height:auto;max-height:calc(100dvh - 32px);}
+.confirmation-dialog>.scroll-area{min-height:0;flex:0 1 auto;display:flex;flex-direction:column;gap:18px;padding:0 26px 24px;overflow-wrap:anywhere;}
+.confirmation-dialog>.scroll-area>p{margin:0;}
+.confirmation-dialog label{display:flex;flex-direction:column;gap:9px;min-width:0;font-size:13px;line-height:1.6;}
+.confirmation-dialog label input{width:100%;min-width:0;}
+.confirmation-dialog .dialog-footer{justify-content:flex-end;}
+.confirmation-dialog .dialog-footer button{height:auto;min-height:40px;white-space:normal;line-height:1.5;}
+.confirmation-facts{display:grid;gap:12px;padding:16px;border:1px solid hsl(var(--border));border-radius:9px;background:hsl(var(--muted)/.4);font-size:13px;line-height:1.65;}
+.confirmation-facts>div{display:grid;grid-template-columns:minmax(90px,auto) minmax(0,1fr);gap:8px 16px;}
+.confirmation-facts dt{color:hsl(var(--muted-foreground));}
+.confirmation-facts dd{min-width:0;margin:0;font-weight:600;}
+.confirmation-serial{display:inline-block;color:hsl(var(--muted-foreground));font-weight:400;}
+.confirmation-warning{display:flex;align-items:flex-start;gap:10px;padding:13px 14px;border:1px solid hsl(var(--destructive)/.3);border-radius:9px;background:hsl(var(--destructive)/.07);font-size:13px;line-height:1.75;}
+.confirmation-warning>svg{flex-shrink:0;margin-top:3px;color:hsl(var(--destructive));}
+@media(max-width:560px){
+  .confirmation-dialog .dialog-footer{flex-direction:column;align-items:stretch;}
+  .confirmation-facts>div{grid-template-columns:minmax(0,1fr);gap:3px;}
+}
 .support-dialog{width:min(660px,calc(100vw - 48px));height:auto;max-height:calc(100dvh - 48px);}
 .removal-reset-dialog{width:min(640px,calc(100vw - 48px));height:auto;max-height:calc(100dvh - 48px);}
 .reset-choice-body{min-height:0;overflow-y:auto;padding:0 24px 20px;}

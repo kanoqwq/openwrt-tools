@@ -188,6 +188,8 @@
 .android-host .dialog-content>h2{font-size:20px;line-height:1.5;margin-right:35px}
 .android-host .dialog-content>p{font-size:13px;line-height:1.7;color:hsl(var(--muted-foreground))}
 .android-host .dialog-content:is(.help-dialog,.onboarding-dialog,.support-dialog,.mobile-about-dialog){padding:0;gap:0;overflow:hidden}
+.android-host .dialog-content.confirmation-dialog{padding:0;gap:0;overflow:hidden}
+.android-host .confirmation-dialog .dialog-footer button{white-space:normal}
 .android-host .dialog-heading{padding:22px 64px 18px 24px;min-width:0}
 .android-host .dialog-heading .eyebrow{font-size:10px;letter-spacing:.08em;margin-bottom:7px}
 .android-host .dialog-heading h2{font-size:21px;line-height:1.4;margin:0 0 7px}
