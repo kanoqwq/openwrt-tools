@@ -2,9 +2,11 @@
 """Native entry reuse and OTA export scopes, without devices or compilation."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import runpy
 import sys
+import subprocess
 import tempfile
 import unittest
 import zipfile
@@ -53,6 +55,10 @@ class DiffPackaging(unittest.TestCase):
                 self.assertIn(name,names)
             self.assertFalse(any('Installer' in n or n.startswith('files/') or 'adb' in n for n in names))
             self.assertEqual(names.count('update.ota'),1)
+            exported=self.root.parent/'extracted';z.extractall(exported)
+        result=subprocess.run([sys.executable,'-B',str(exported/'OpenWrt-Updater.py'),'--help'],cwd=exported,
+                              env=dict(os.environ,PYTHONPATH=''),capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)
 
     def test_export_restores_mac_execute_bits_from_windows_style_modes(self):
         manifest=tool['attach'](self.root)

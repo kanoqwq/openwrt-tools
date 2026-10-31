@@ -207,6 +207,9 @@ class GenerationTests(unittest.TestCase):
                 with mock.object(sys,'argv',argv):builder.main()
                 m=json.loads((output/'diff-tool.json').read_text())
                 self.assertNotIn('diff-tool.json',m['files'])
+                result=subprocess.run([sys.executable,'-B',str(output/'OpenWrt-Diff-Studio.py'),'--help'],cwd=output,
+                                      env=dict(os.environ,PYTHONPATH=''),capture_output=True,text=True)
+                self.assertEqual(result.returncode,0,result.stderr)
                 with mock.object(sys,'argv',argv+['--refresh']):builder.main()
                 m=json.loads((output/'diff-tool.json').read_text())
                 self.assertNotIn('diff-tool.json',m['files'])

@@ -15,7 +15,7 @@ import sys
 import zipfile
 
 TOP=Path(__file__).resolve().parent
-SUPPORT=('__init__.py','resources.py','host.py','ota_engine.py','ota_package.py','release_index.py','ota_desktop.py',
+SUPPORT=('__init__.py','resources.py','host.py','ssh_runtime.py','ota_engine.py','ota_package.py','release_index.py','ota_desktop.py',
          'ota_bundle.py','ota_runtime.py','boot.py','rpc.py','proxy.sh','lz4raw-aarch64.so',
          'errors.js','unisoc-ota.js','unisoc-ota.json')
 
