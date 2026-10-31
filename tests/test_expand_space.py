@@ -2,6 +2,7 @@
 import hashlib
 import io
 import json
+import random
 from pathlib import Path
 import struct
 import subprocess
@@ -16,7 +17,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import test_uninstall as fx
 from backend import expand_space as grow, gpt
 from backend.service import Service
-from backend.state import Context, RecoveryRequired
+from backend.state import Context, RecoveryRequired, Cancelled
 from backend.uninstall import table
 from backend.uninstall_growth import PreservationUnavailable, inspect_android_growth
 
@@ -39,6 +40,22 @@ def native_copies(first, sectors, block):
 
 
 class Geometry(unittest.TestCase):
+    def test_randomized_native_sector_growth_preserves_every_other_entry(self):
+        rng=random.Random(20261031)
+        original,_=fx.layouts()
+        for case in range(256):
+            block=rng.choice((512,4096));total=rng.choice((fx.SECTORS,2*(1<<40)//512))
+            raw=bytearray(table(original[0]));size=rng.randrange(2,45)*(1<<30)
+            struct.pack_into('<Q',raw,3*128+40,fx.GIB//512+size//512-1)
+            before=native_copies(fx.copies(raw)[0],total,block)
+            info=gpt.gpt_space(*before,total);info.update(first=before[0],last=before[1])
+            summary=grow.describe(info,{'storage':{'NODE':'sda4','DISK_SIZE':total}})
+            extra=rng.randrange(1,summary['recoverable_bytes']//4096+1)*4096
+            after,part=grow.grow_layout(before,total,size+extra)
+            a,b=bytearray(table(before[0])),bytearray(table(after[0]));at=(part['n']-1)*128+40
+            a[at:at+8]=b[at:at+8]
+            self.assertEqual(a,b,case)
+            self.assertEqual((part['end']-part['start']+1)*512,size+extra)
     def test_emmc_ufs_native_lba_and_large_disks_only_change_userdata_end(self):
         original,_=fx.layouts()
         for block in (512,4096):
@@ -176,6 +193,31 @@ class Workflow(unittest.TestCase):
         with self.assertRaisesRegex(RecoveryRequired,'still active'):worker.commit_gpt()
         self.adb.call.assert_not_called()
 
+    def test_emitted_device_library_and_checksum_list_use_unix_bytes(self):
+        worker=self.plan();worker.layout_state=Mock(side_effect=['before','after']);worker.backup=Mock()
+        self.adb.shell=Mock(side_effect=lambda cmd,**_:'EXPAND-GPT-VERIFIED\n' if cmd.startswith('sh ') else '')
+        with patch('backend.storage.library',return_value='helper() {\n echo verified\n}\n'):
+            worker.commit_gpt()
+        for name in ('storage.sh','SHA256SUMS','commit.sh'):
+            with self.subTest(name=name):
+                data=(worker.folder/name).read_bytes()
+                self.assertIn(b'\n',data);self.assertNotIn(b'\r',data)
+
+    def test_wrong_data_partition_never_becomes_a_preserving_or_reset_plan(self):
+        self.volume['source']='/dev/block/mmcblk0p6'
+        with self.assertRaisesRegex(RecoveryRequired,'userdata'):
+            self.plan(lambda _:True)
+        self.adb.call.assert_not_called()
+
+    def test_resize_still_running_after_connection_loss_cannot_complete_or_restart(self):
+        worker=self.plan();target=worker.r['plan']['android_bytes']
+        self.volume.update(mapped_bytes=target,filesystem_bytes=target)
+        worker.ready=Mock(return_value={**self.device,'boot_id':'new','userdata_bytes':target})
+        worker.layout_state=Mock(return_value='after');worker.r['effects']['expand-gpt']={'state':'done'}
+        self.adb.shell=Mock(side_effect=lambda cmd,**_:'BUSY' if 'ext4.sh' in cmd else '')
+        with self.assertRaisesRegex(RecoveryRequired,'still active'):worker.run()
+        self.assertNotEqual(worker.r['status'],'completed');self.adb.call.assert_not_called()
+
     def test_final_checks_require_uuid_full_mapping_and_filesystem_capacity(self):
         worker=self.plan();expected=worker.r['plan']['android_bytes']
         device={**self.device,'userdata_bytes':expected}
@@ -229,6 +271,69 @@ class Workflow(unittest.TestCase):
         worker=self.plan();worker.ready=Mock(return_value={**self.device,'boot_id':'next'})
         worker.run=Mock(side_effect=FileNotFoundError('backup missing'))
         with self.assertRaises(FileNotFoundError):worker.wait()
+
+    def test_device_identity_changes_stop_before_any_mutation(self):
+        worker=self.plan()
+        for change in ({'cid':'a'*32},{'slot':'_b'},{'storage':{**self.device['storage'],'NODE':'mmcblk0p7'}},
+                       {'storage':{**self.device['storage'],'DISK_SIZE':fx.SECTORS-8}},
+                       {'storage':{**self.device['storage'],'START':self.device['storage']['START']+8}}):
+            with self.subTest(change=change):
+                self.adapter.probe.return_value={**self.device,**change}
+                with self.assertRaises(RecoveryRequired):worker.ready()
+        self.adb.call.assert_not_called();self.assertFalse(worker.r['effects'])
+
+    def test_backup_corruption_or_pause_prevents_gpt_write(self):
+        worker=self.plan();worker.layout_state=Mock(return_value='before');self.adb.cleanup_backup=Mock()
+        self.adb.backup_partition=Mock(side_effect=lambda name,path,ctx:Path(path).write_bytes(self.bcb))
+        worker.backup()
+        (worker.ctx.directory/'backup/gpt-first.bin').write_bytes(b'corrupt')
+        with self.assertRaisesRegex(RecoveryRequired,'backup failed'):worker.commit_gpt()
+        self.adb.call.assert_not_called()
+        other=self.plan();other.layout_state=Mock(return_value='before');other.ctx.cancel=True
+        with self.assertRaises(Cancelled):other.commit_gpt()
+        self.adb.call.assert_not_called()
+
+    def test_resize_failure_never_formats_and_pauses_for_a_separate_decision(self):
+        worker=self.plan();target=worker.r['plan']['android_bytes']
+        self.volume.update(mapped_bytes=target)
+        worker.ready=Mock(return_value={**self.device,'boot_id':'new','userdata_bytes':target})
+        worker.layout_state=Mock(return_value='after');worker.r['effects']['expand-gpt']={'state':'done'}
+        worker.grow_ext4=Mock(return_value='kernel resize refused')
+        with patch.object(worker,'reset') as reset,self.assertRaises(grow.FormatRequired):worker.run()
+        reset.assert_not_called();self.assertEqual(worker.r['status'],'waiting_user')
+        self.assertFalse(worker.r['plan']['wipe']);self.assertFalse(worker.meta['reset_authorized'])
+
+    def test_ext4_lost_receipt_or_changed_tools_never_authorizes_a_reset(self):
+        worker=self.plan()
+        def shell(cmd,**_):
+            if cmd.startswith('for p in /proc/'):return ''
+            if cmd.startswith('sha256sum '):return hashlib.sha256(b'elf').hexdigest()+' file'
+            if cmd.startswith('sh '):return 'resize output without receipt'
+            return ''
+        self.adb.shell=Mock(side_effect=shell)
+        with self.assertRaisesRegex(RecoveryRequired,'receipt'):worker.grow_ext4(self.device,self.volume)
+        self.assertFalse(worker.r['plan']['wipe']);self.assertNotIn('expand_reset_offer',worker.r)
+        self.tools_patch.stop()
+        with patch.object(grow,'growth_tools',return_value={'wrong':b'changed'}),self.assertRaisesRegex(RecoveryRequired,'differ'):
+            worker.grow_ext4(self.device,self.volume)
+
+    @unittest.skipUnless(sys.platform.startswith('linux'),'Real process-argument fixtures')
+    def test_orphan_resize_is_detected_without_blocking_unrelated_resizers(self):
+        worker=self.plan();remote=worker._remote()
+        folder=worker.ctx.directory/'proc';(folder/'123').mkdir(parents=True)
+        def shell(cmd,**_):
+            cmd=cmd.replace('/proc/[0-9]*/cmdline',str(folder/'[0-9]*/cmdline'))
+            result=subprocess.run(['bash','-c',cmd],text=True,capture_output=True,check=True)
+            return result.stdout
+        self.adb.shell=Mock(side_effect=shell)
+        for args,busy in ((['sh',remote+'/ext4.sh'],True),
+                          ([remote+'/tools/lib/ld-musl-aarch64.so.1','--library-path',remote+'/tools/lib',remote+'/tools/usr/sbin/resize2fs','/dev/dm-7'],True),
+                          (['resize2fs','/another/transaction','/dev/dm-7'],False)):
+            with self.subTest(args=args):
+                (folder/'123/cmdline').write_bytes(b'\0'.join(a.encode() for a in args)+b'\0')
+                if busy:
+                    with self.assertRaisesRegex(RecoveryRequired,'still active'):worker.ensure_idle('ext4.sh')
+                else:worker.ensure_idle('ext4.sh')
 
     def test_new_operation_requires_yes_token_and_plan_confirmation_in_both_families(self):
         self.volume['filesystem']='unsupported'
@@ -299,6 +404,15 @@ class Workflow(unittest.TestCase):
 
 
 class StockEvidence(unittest.TestCase):
+    def test_raw_and_dm_sources_must_belong_to_the_current_userdata(self):
+        adb=SimpleNamespace(shell=Mock(return_value='sda75'))
+        device={'storage':{'NODE':'sda75'}}
+        grow.verify_data_source(adb,device,'/dev/block/sda75');adb.shell.assert_not_called()
+        grow.verify_data_source(adb,device,'/dev/block/dm-8')
+        for slaves in ('sda76','sda75 sda76','dm-7',''):
+            adb.shell.return_value=slaves
+            with self.subTest(slaves=slaves),self.assertRaises(RecoveryRequired):
+                grow.verify_data_source(adb,device,'/dev/block/dm-8')
     def test_file_encrypted_raw_f2fs_and_metadata_encrypted_mapper_are_separate(self):
         binary=bytearray(64);binary[:6]=b'\x7fELF\x02\x01';struct.pack_into('<H',binary,18,183)
         manager=bytes(binary)+b'/system/bin/resize.f2fs\0'

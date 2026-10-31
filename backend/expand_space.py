@@ -102,6 +102,17 @@ def android_f2fs_proof(adapter, device, volume):
     return proof
 
 
+def verify_data_source(adb,device,source):
+    node=device['storage']['NODE']
+    if source in ('/dev/block/'+node,'/dev/'+node):return
+    if re.fullmatch(r'/dev/(?:block/)?dm-\d+',source):
+        mapper=source.rsplit('/',1)[-1]
+        slaves=adb.shell('for p in /sys/class/block/'+mapper+'/slaves/*; do '
+                         '[ ! -e "$p" ] || echo "${p##*/}"; done',root=True).split()
+        if slaves==[node]:return
+    raise RecoveryRequired('Android /data is not the verified userdata mapping / Android /data 并非已核实的 userdata 映射，不会扩容其他分区')
+
+
 def prepare(adapter, device, authorize_reset=None):
     if device.get('readiness')!='ready':
         raise RecoveryRequired('Rooted Android must be ready / 请先完成 Android 初始化、调试和 root 授权')
@@ -127,6 +138,7 @@ def prepare(adapter, device, authorize_reset=None):
     source=adapter.adb.shell('readlink -f '+shlex.quote(device['storage']['SOURCE']),root=True).strip()
     if not re.fullmatch(r'/dev/(?:block/)?(?:dm-\d+|mmcblk\d+p\d+|sd[a-z]+\d+)',source):
         raise RecoveryRequired('Android /data source is not a supported block mapping / Android /data 不是可确认的块设备映射')
+    verify_data_source(adapter.adb,device,source)
     mapped=int(adapter.adb.shell('blockdev --getsize64 '+source,root=True).strip())
     if not 0<mapped<=device['userdata_bytes']:
         raise RecoveryRequired('Android /data mapping exceeds userdata / Android /data 映射超出 userdata')
@@ -260,15 +272,22 @@ class Expander:
             if not (folder/name).is_file() or sha(folder/name)!=sums.get(name):
                 raise RecoveryRequired('Expansion backup failed verification / 扩容备份校验失败')
 
-    def commit_gpt(self):
-        adb=self.adapter.adb;remote=self._remote();m=self.meta
+    def ensure_idle(self,name):
+        if name not in ('commit.sh','ext4.sh'):raise ValueError('Unknown expansion worker')
+        remote=self._remote()
         # A disconnected controller does not prove its device worker exited.
         # Do not overwrite staging or start another writer until it is gone.
-        active=adb.shell('for p in /proc/[0-9]*/cmdline; do '
+        orphan_check=('tr "\\000" "\\n" < "$p" 2>/dev/null | grep -Fxq '+
+                      shlex.quote(remote+'/tools/usr/sbin/resize2fs')+' && echo BUSY; ') if name=='ext4.sh' else ''
+        active=self.adapter.adb.shell('for p in /proc/[0-9]*/cmdline; do '
             '[ -r "$p" ] || continue; s=$(tr "\\000" "\\n" < "$p" 2>/dev/null | sed -n "2p"); '
-            '[ "$s" != '+shlex.quote(remote+'/commit.sh')+' ] || echo BUSY; done; true',root=True).strip()
+            '[ "$s" != '+shlex.quote(remote+'/'+name)+' ] || echo BUSY; '+orphan_check+'done; true',root=True).strip()
         if 'BUSY' in active.splitlines():
             raise RecoveryRequired('Expansion worker is still active; reconnect to check again / 扩容写入仍在执行，请稍后重新检查')
+
+    def commit_gpt(self):
+        adb=self.adapter.adb;remote=self._remote();m=self.meta
+        self.ensure_idle('commit.sh')
         state=self.layout_state()
         if state=='after':
             self.r['effects']['expand-gpt']={'state':'done','time':time.time(),'result':'GPT verified by readback'}
@@ -280,10 +299,10 @@ class Expander:
             adb.call('push',str(self.folder/name),remote+'/'+name,timeout=30)
         disk='/dev/block/'+storage.disk_node(self.r['device']['storage']['NODE'])
         checks='\n'.join(f'{self.meta["checksums"][name]}  {name}' for name in self.files)+'\n'
-        (self.folder/'SHA256SUMS').write_text(checks,encoding='ascii')
+        (self.folder/'SHA256SUMS').write_bytes(checks.encode('ascii'))
         adb.call('push',str(self.folder/'SHA256SUMS'),remote+'/SHA256SUMS',timeout=30)
         from .storage import library
-        (self.folder/'storage.sh').write_text(library(self.adapter.root,self.adapter.kind),encoding='utf-8')
+        (self.folder/'storage.sh').write_bytes(library(self.adapter.root,self.adapter.kind).encode('utf-8'))
         adb.call('push',str(self.folder/'storage.sh'),remote+'/storage.sh',timeout=30)
         script=f'''#!/system/bin/sh
 set -eu
@@ -380,6 +399,8 @@ echo EXPAND-GPT-VERIFIED
     def grow_ext4(self,device,volume):
         if volume['filesystem']!='ext4' or volume['uuid']!=self.meta['volume']['uuid']:
             raise RecoveryRequired('Android ext4 identity changed / Android ext4 文件系统身份发生变化')
+        verify_data_source(self.adapter.adb,device,volume['source'])
+        self.ensure_idle('ext4.sh')
         tools=growth_tools(self.adapter,'ext4')
         if {n:hashlib.sha256(v).hexdigest() for n,v in tools.items()}!=self.meta['tool_hashes']:
             raise RecoveryRequired('Ext4 tools differ from the reviewed package / ext4 工具与确认的安装包不一致')
@@ -398,8 +419,11 @@ echo EXPAND-GPT-VERIFIED
         command=('set -eu; [ "$(blockdev --getsize64 '+source+')" = '+str(size)+' ]; '
                  'chmod 755 '+remote+'/lib/ld-musl-aarch64.so.1 '+remote+'/usr/sbin/resize2fs; '+
                  remote+'/lib/ld-musl-aarch64.so.1 --library-path '+remote+'/lib:'+remote+'/usr/lib '+remote+'/usr/sbin/resize2fs '+source)
+        worker=self.folder/'ext4.sh'
+        worker.write_bytes(('#!/system/bin/sh\nset +e; ('+command+'); rc=$?; echo __EXPAND_EXT4_STATUS=$rc; exit 0\n').encode('utf8'))
+        adb.call('push',str(worker),self._remote()+'/ext4.sh',timeout=30)
         output=self.ctx.effect('expand-ext4',lambda:adb.shell(
-            'set +e; ('+command+'); rc=$?; echo __EXPAND_EXT4_STATUS=$rc; exit 0',root=True,timeout=180),retry_safe=True)
+            'sh '+self._remote()+'/ext4.sh',root=True,timeout=180),retry_safe=True)
         status=re.findall(r'(?m)^__EXPAND_EXT4_STATUS=(\d+)\s*$',output)
         if len(status)!=1:raise RecoveryRequired('Ext4 resize receipt is missing / ext4 扩容缺少执行回执')
         self.ctx.log(output,scope='expand-ext4')
@@ -412,6 +436,7 @@ echo EXPAND-GPT-VERIFIED
             raise RecoveryRequired('Android filesystem did not reach its new allocation / Android 文件系统尚未达到新的分配容量')
         if not self.r['plan']['wipe'] and volume['uuid']!=self.meta['volume']['uuid']:
             raise RecoveryRequired('Preserved Android data identity changed / 保留的 Android 数据身份发生变化')
+        verify_data_source(self.adapter.adb,device,volume['source'])
         reset_verified=bool(self.meta['volume'].get('uuid') and self.meta['volume']['uuid']!=volume['uuid']) if self.r['plan']['wipe'] else False
         if self.r['plan']['wipe'] and not reset_verified:
             self.ctx.log('Capacity verified; recovery was requested but data reset cannot be established from the old filesystem identity / 容量校验通过，已请求原厂清空，但无法依据原文件系统身份确认清空结果',level='warning',scope='expand')
@@ -423,7 +448,7 @@ echo EXPAND-GPT-VERIFIED
         try:
             android_growth_boot.cleanup(self,operation='expand')
             remote=self._remote()
-            names=['before-first','before-last','after-first','after-last','SHA256SUMS','storage.sh','commit.sh','check-first','check-last','reset-bcb','normal-bcb']
+            names=['before-first','before-last','after-first','after-last','SHA256SUMS','storage.sh','commit.sh','ext4.sh','check-first','check-last','reset-bcb','normal-bcb']
             tool_names=[]
             for name in self.meta['tool_hashes']:
                 relative=name.removeprefix('openwrt-uninstall/tools/')
@@ -478,6 +503,7 @@ echo EXPAND-GPT-VERIFIED
             # never treat that new Android image as our still-pending hook.
             self.r['expand_android_growth_restored']=True;self.ctx.store.save(self.r)
         self.ctx.stage('verify_android')
+        if self.meta['action']=='grow-online-ext4':self.ensure_idle('ext4.sh')
         volume=android_volume(self.adapter.adb,device,allow_small=True)
         if not self.r['plan']['wipe'] and volume['uuid']!=self.meta['volume']['uuid']:
             raise RecoveryRequired('Android filesystem identity changed / Android 文件系统身份发生变化')
