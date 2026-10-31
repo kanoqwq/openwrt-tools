@@ -1,6 +1,7 @@
 """Diff generator and SSH updater shared by the portable Tauri frontend."""
 import hashlib
 import json
+import re
 from pathlib import Path
 import secrets
 import shlex
@@ -72,6 +73,12 @@ def remote_prepare(client, archive, emit=lambda *_: None):
     with Patch(archive) as patch:
         if not patch.manifest.get('runtime'):
             raise ValueError('This patch does not contain a portable updater runtime')
+        from .ota_runtime import bootstrap
+        # The controller owns the SSH admission handoff. Reconstruct its small
+        # shell entry from the verified manifest, including for existing OTA
+        # archives whose packaged entry confuses a session nonce with Patch.id.
+        # Do not alter the OTA archive, its engine, blobs or review checks.
+        entry = bootstrap(patch.manifest['runtime'], patch.manifest['busybox'])
         # Only mkdir/cat/chmod and shell builtins are needed to upload the first
         # static executable over SSH (old Dropbear may have no SFTP server).
         # All subsequent filesystem/hash/space operations use that executable.
@@ -80,13 +87,14 @@ def remote_prepare(client, archive, emit=lambda *_: None):
         bb = shlex.quote(runtime+'/busybox')
         for key, name in (('busybox', 'busybox'), ('bootstrap', 'bootstrap.sh')):
             desc = patch.manifest[key]
-            content = patch.archive.read('blobs/'+desc['sha256'])
+            content = patch.archive.read('blobs/'+desc['sha256']) if key == 'busybox' else entry
+            expected = desc['sha256'] if key == 'busybox' else hashlib.sha256(content).hexdigest()
             cat = 'cat' if key == 'busybox' else bb+' cat'
             send(client,'umask 077; '+cat+' > '+shlex.quote(runtime+'/'+name),[content])
             if key == 'busybox':
                 execute(client, 'chmod 700 '+shlex.quote(runtime+'/busybox'))
             got = execute(client, bb+' sha256sum '+shlex.quote(runtime+'/'+name)).split()[0]
-            if got != desc['sha256']: raise ValueError('Runtime helper checksum mismatch')
+            if got != expected: raise ValueError('Runtime helper checksum mismatch')
         available = set(execute(client, bb+' --list').splitlines())
         required = {'sh', 'cat', 'chmod', 'mkdir', 'df', 'sha256sum', 'mv',
                     'unzip', 'cp', 'ln', 'rm', 'mount', 'chroot', 'reboot'}
@@ -119,7 +127,13 @@ def remote_prepare(client, archive, emit=lambda *_: None):
 def runtime_call(client, session, command, setup=False):
     home = session['runtime']
     if setup:
-        shell = ' '.join(map(shlex.quote, [home+'/busybox', 'sh', home+'/bootstrap.sh', session['path'], command, home]))
+        args=[home+'/busybox', 'sh', home+'/bootstrap.sh', session['path'], command, home]
+        if command=='start':
+            reviewed=(session.get('check') or {}).get('id')
+            if not isinstance(reviewed,str) or not re.fullmatch('[a-f0-9]{64}',reviewed):
+                raise ValueError('Review this patch before applying / 请先检查此补丁再应用')
+            args.append(reviewed)
+        shell = ' '.join(map(shlex.quote,args))
     else:
         shell = 'UNISOC_OTA_ROOT=/target UNISOC_OTA_RAM=/ UNISOC_OTA_LIVE=1 PYTHONHOME=/usr '+shlex.quote(home+'/busybox')+' chroot '+shlex.quote(home+'/root')+' /usr/bin/python3 /ota/rpc.py '+shlex.quote(command)
     return json.loads(execute(client, shell))

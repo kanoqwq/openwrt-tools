@@ -89,10 +89,10 @@ class ReducedShell:
             self.directories.add(name)
         if command.startswith('if test -x '): return 'ready\n' if self.ready else ''
         if '/bootstrap.sh ' in command:
-            mode = shlex.split(command)[-2]
+            mode = shlex.split(command)[4]
             if mode == 'inspect':
                 if self.inspect_error: raise RuntimeError('Device/base mismatch: version')
-                return json.dumps({'applicable': True, 'id': 'test-patch'})
+                return json.dumps({'applicable': True, 'id': self.patch_id})
             if mode == 'start': return json.dumps({'status': 'running'})
             self.ready = True
             return json.dumps(self.status_result)
@@ -117,6 +117,8 @@ class DesktopTests(unittest.TestCase):
         m['bootstrap'] = {k:v for k,v in file(contents[3]).items() if k in ('sha256', 'size')}
         package(self.archive, m, {hashlib.sha256(b).hexdigest(): b for b in contents})
         self.shell = ReducedShell()
+        with desktop.Patch(self.archive) as verified:self.shell.patch_id=verified.id
+        self.shell.status_result['transaction']['id']=self.shell.patch_id
         for name, value in (('connect', lambda *args: self.shell), ('execute', self.shell.execute)):
             mock = patch.object(desktop, name, value)
             mock.start(); self.addCleanup(mock.stop)

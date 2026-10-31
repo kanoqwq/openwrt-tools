@@ -68,9 +68,21 @@ def build(release):
 def bootstrap(runtime, busybox):
     """Generated commands refer only to validated paths and content hashes."""
     lines = ['#!/bin/sh', 'set -eu', 'umask 077', 'patch=$1', 'command=$2', 'home=$3',
-             'id=${home#/tmp/unisoc-ota-}',
-             'case "$id" in *[!0-9a-f]*|\'\') exit 2 ;; esac',
-             '[ "$home" != "$id" ] && [ ${#id} -eq 64 ] && [ ! -L "$home" ]',
+             'session=${home#/tmp/unisoc-ota-}',
+             'case "$session" in *[!0-9a-f]*|\'\') exit 2 ;; esac',
+             '[ "$home" != "$session" ] && [ ${#session} -eq 64 ] && [ ! -L "$home" ]',
+             # The RAM directory identifies a session, not the patch. New
+             # controllers pass the reviewed ID explicitly; old callers can
+             # use its content-addressed filename. RPC always rehashes it.
+             'id=${4:-}',
+             'if [ -z "$id" ]; then',
+             ' id=${patch##*/}',
+             ' case "$id" in upload-*.ota) id=${id#upload-}; id=${id%.ota} ;; reviewed-*.ota) id=${id#reviewed-}; id=${id%.ota} ;; *) id= ;; esac',
+             'fi',
+             'if [ "$command" = start ]; then',
+             ' case "$id" in *[!0-9a-f]*|\'\') exit 2 ;; esac',
+             ' [ ${#id} -eq 64 ]',
+             'fi',
              'bb="$home/busybox"', 'root="$home/root"', '"$bb" mkdir -p "$root" "$home/content"',
              # A same-device bind mount is not detectable with st_dev tests.
              # proc mounts is available before entering our RAM chroot; paths
