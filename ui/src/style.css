@@ -350,6 +350,8 @@ input:not([type=checkbox]):hover,select:hover {border-color:hsl(var(--primary)/.
   [data-sonner-toast] {transition:none!important;}
 }
 .space-overview h2{display:flex;align-items:center;gap:9px;}
+.space-actions{display:flex;flex-wrap:wrap;gap:12px;margin:16px 0;}
+.space-actions+.device-hint{margin-top:0;}
 .space-gaps{display:grid;gap:10px;margin-top:14px;}
 .space-gap{min-width:0;display:grid;gap:5px;padding:12px;border:1px solid hsl(var(--border));border-radius:10px;background:hsl(var(--background));}
 .space-gap p,.space-gap small{margin:0;overflow-wrap:anywhere;}
