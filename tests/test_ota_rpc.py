@@ -190,6 +190,7 @@ class RPCTests(unittest.TestCase):
         import shutil
         with tempfile.TemporaryDirectory() as d:
             self.rpc.STATE=Path(d)
+            self.rpc.ROOT=d
             launch=subprocess.Popen
             children=[]
             def harmless(command, **kwargs):
@@ -197,7 +198,9 @@ class RPCTests(unittest.TestCase):
                 kwargs['stderr']=subprocess.PIPE
                 child=launch(command,**kwargs);children.append(child);return child
             try:
-                with patch.dict(os.environ,{'UNISOC_OTA_RAM':''}), patch.object(self.rpc.subprocess,'Popen',side_effect=harmless):
+                with patch.dict(os.environ,{'UNISOC_OTA_RAM':''}), patch.object(self.rpc.subprocess,'Popen',side_effect=harmless), \
+                     patch.object(self.rpc,'arm_next_linux'), patch.object(self.rpc,'Engine') as engine:
+                    engine.return_value.identity.return_value={'family':'e5'}
                     self.assertEqual(self.rpc.dispatch('reboot')['status'],'rebooting')
                 with (Path(d)/'job.lock').open('a') as held:
                     with self.assertRaises(BlockingIOError): fcntl.flock(held,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -221,6 +224,17 @@ class RPCTests(unittest.TestCase):
                     self.assertIs(status['reboot_required'],expected)
                     self.assertEqual(status['transaction']['status'],'complete')
                     self.assertEqual(json.loads(self.rpc.JOB.read_text()),record)
+
+    def test_failed_boot_selection_cancels_reboot_and_releases_both_locks(self):
+        import fcntl
+        with tempfile.TemporaryDirectory() as d:
+            self.rpc.STATE=Path(d);self.rpc.ROOT=d
+            with patch.object(self.rpc,'Engine') as engine, patch.object(self.rpc,'arm_next_linux',side_effect=ValueError('bad boot control')), patch.object(self.rpc.subprocess,'Popen') as launch:
+                engine.return_value.identity.return_value={'family':'mu300'}
+                with self.assertRaisesRegex(ValueError,'bad boot control'):self.rpc.dispatch('reboot')
+                launch.assert_not_called()
+            for path in (Path(d)/'job.lock',Path(d)/'run/openwrt-default-boot.lock'):
+                with path.open('a') as held:fcntl.flock(held,fcntl.LOCK_EX|fcntl.LOCK_NB)
 
     def test_discard_cannot_race_a_worker_or_reboot(self):
         import fcntl

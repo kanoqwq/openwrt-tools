@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import stat
 import struct
+import zlib
 
 MAGIC = bytes.fromhex('02214c18')
 HOOK = '''
@@ -320,7 +321,7 @@ def bind(image, current, family):
     return result
 
 
-def target(root, family):
+def linux_slot(root, family):
     root = Path(root); slots = set()
     for name in (f'etc/{family}/linux-slot', f'run/{family}/linux-slot', 'run/e5linux/linux-slot'):
         path = root/name
@@ -340,6 +341,11 @@ def target(root, family):
         path = root/name
         if path.is_file() and path.read_text().strip() == slot:
             raise ValueError('Android and Linux boot slot declarations conflict')
+    return slot
+
+
+def partition_device(root, name):
+    root=Path(root)
     def device(path):
         resolved = path.resolve()
         if resolved.is_relative_to(root): return resolved
@@ -348,16 +354,58 @@ def target(root, family):
             if mapped.exists(): return mapped
         raise ValueError('Boot device alias escapes /dev')
     for prefix in ('dev/block/by-name', 'dev/disk/by-partlabel'):
-        path = root/prefix/('boot_'+slot)
+        path = root/prefix/name
         if path.exists(): return device(path)
     # OpenWrt may only expose by-name links under /dev/block/platform/...
-    for path in (root/'dev').glob('block/platform/**/by-name/boot_'+slot):
+    for path in (root/'dev').glob('block/platform/**/by-name/'+name):
         if path.exists(): return device(path)
     for path in (root/'sys/class/block').glob('*/uevent'):
-        if ('PARTNAME=boot_'+slot) in path.read_text().splitlines():
+        if ('PARTNAME='+name) in path.read_text().splitlines():
             candidate = root/'dev'/path.parent.name
             if candidate.exists(): return candidate
-    raise ValueError('Linux boot partition is unavailable')
+    raise ValueError('Partition is unavailable: '+name)
+
+
+def target(root,family):
+    return partition_device(root,'boot_'+linux_slot(root,family))
+
+
+def arm_next_linux(root,family):
+    """One verified OpenWrt trial for OTA reboot; never change default policy.
+
+    Caller holds the same /run lock used by both families' system switchers.
+    No root filesystem mounting or external board helper is required.
+    """
+    root=Path(root);slot=linux_slot(root,family)
+    controls=('run/e5linux/misc-bc-slot-b-trial.bin','etc/e5linux/misc-bc-slot-b-trial.bin') if family=='e5' else (
+        'run/mu300/misc-bc-linux-trial.bin','run/mu300/misc-bc-slot-b-trial.bin')
+    wanted=next((p.read_bytes() for n in controls if (p:=root/n).is_file()),None)
+    def validate(raw):
+        if (not raw or len(raw)!=32 or raw[4:8]!=b'BCAB' or raw[8]!=1 or (raw[9]&7)!=2 or
+                raw[:2] not in (b'_a',b'_b') or
+                struct.unpack_from('<I',raw,28)[0]!=zlib.crc32(raw[:28])):
+            raise ValueError('Boot control validation failed; reboot cancelled / 启动控制校验失败，已取消重启')
+    validate(wanted)
+    status=wanted[12+(slot=='b')*2]
+    other=wanted[12+(slot=='a')*2]
+    if wanted[:2]!=('_'+slot).encode() or status&15<=other&15 or not(status&128 or (status>>4)&7>=2):
+        raise ValueError('OpenWrt trial slot is not bootable / OpenWrt 试启动槽位无效')
+    misc=partition_device(root,'misc')
+    with misc.open('r+b',buffering=0) as stream:
+        stream.seek(2048);before=stream.read(32);validate(before)
+        if before==wanted:return {'slot':slot,'changed':False}
+        try:
+            stream.seek(2048)
+            if stream.write(wanted)!=32:raise OSError('Short boot-control write')
+            os.fsync(stream.fileno());stream.seek(2048)
+            if stream.read(32)!=wanted:raise OSError('Boot-control readback differs')
+        except BaseException:
+            stream.seek(2048)
+            if stream.write(before)!=32:raise OSError('Boot-control restoration write incomplete')
+            os.fsync(stream.fileno());stream.seek(2048)
+            if stream.read(32)!=before:raise OSError('Boot-control restoration readback differs')
+            raise
+    return {'slot':slot,'changed':True}
 
 
 def write(path, image, family):

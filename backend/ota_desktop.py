@@ -10,29 +10,48 @@ import zipfile
 
 from .ota_engine import Patch, digest
 from .ota_package import analyze
+from .ssh_runtime import connect_ssh
+
+
+def collect(channel, timeout=1800):
+    out, err = bytearray(), bytearray()
+    deadline = time.monotonic() + timeout
+    try:
+        while not channel.exit_status_ready() or channel.recv_ready() or channel.recv_stderr_ready():
+            if channel.recv_ready():out.extend(channel.recv(65536))
+            if channel.recv_stderr_ready():err.extend(channel.recv_stderr(65536))
+            if len(out) + len(err) > 32 << 20:raise ValueError('Device response exceeded limit')
+            if time.monotonic() > deadline:
+                raise TimeoutError('Device operation has not returned; reconnect and check status / 设备操作尚未返回，请重新连接并检查状态')
+            time.sleep(.02)
+        code = channel.recv_exit_status()
+        if code<0:raise ConnectionError('SSH closed before command completion / SSH 在命令完成前已断开')
+        if code:raise RuntimeError(out.decode('utf-8', 'replace') + err.decode('utf-8', 'replace'))
+        return out.decode('utf-8', 'replace')
+    finally:channel.close()
 
 
 def execute(client, command, timeout=1800):
-    channel = client.get_transport().open_session(timeout=20)
-    channel.exec_command(command)
-    out, err = bytearray(), bytearray()
-    deadline = time.monotonic() + timeout
-    while not channel.exit_status_ready() or channel.recv_ready() or channel.recv_stderr_ready():
-        if channel.recv_ready():
-            out.extend(channel.recv(65536))
-        if channel.recv_stderr_ready():
-            err.extend(channel.recv_stderr(65536))
-        if len(out) + len(err) > 32 << 20:
-            channel.close()
-            raise ValueError('Device response exceeded limit')
-        if time.monotonic() > deadline:
-            channel.close()
-            raise TimeoutError('Device update is still running; reconnect and check status')
-        time.sleep(.02)
-    code = channel.recv_exit_status()
-    if code:
-        raise RuntimeError(out.decode('utf-8', 'replace') + err.decode('utf-8', 'replace'))
-    return out.decode('utf-8', 'replace')
+    channel = client.get_transport().open_session(timeout=30)
+    try:
+        channel.settimeout(min(timeout,60))
+        channel.exec_command(command)
+        return collect(channel,timeout)
+    except BaseException:
+        channel.close();raise
+
+
+def send(client,command,blocks,progress=lambda _:None):
+    channel=client.get_transport().open_session(timeout=30)
+    try:
+        channel.settimeout(60)
+        channel.exec_command(command)
+        for block in blocks:
+            channel.sendall(block);progress(len(block))
+        channel.shutdown_write()
+        return collect(channel,120)
+    except BaseException:
+        channel.close();raise
 
 
 def connect(host, password):
@@ -42,8 +61,7 @@ def connect(host, password):
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
-        client.connect(host, username='root', password=password, look_for_keys=False, allow_agent=False,
-                       timeout=15, banner_timeout=15, auth_timeout=15)
+        connect_ssh(client,host,password)
     except BaseException:
         client.close()
         raise
@@ -63,11 +81,8 @@ def remote_prepare(client, archive, emit=lambda *_: None):
         for key, name in (('busybox', 'busybox'), ('bootstrap', 'bootstrap.sh')):
             desc = patch.manifest[key]
             content = patch.archive.read('blobs/'+desc['sha256'])
-            channel = client.get_transport().open_session(timeout=20)
             cat = 'cat' if key == 'busybox' else bb+' cat'
-            channel.exec_command('umask 077; '+cat+' > '+shlex.quote(runtime+'/'+name))
-            channel.sendall(content); channel.shutdown_write()
-            if channel.recv_exit_status() != 0: raise ValueError('Runtime helper upload failed')
+            send(client,'umask 077; '+cat+' > '+shlex.quote(runtime+'/'+name),[content])
             if key == 'busybox':
                 execute(client, 'chmod 700 '+shlex.quote(runtime+'/busybox'))
             got = execute(client, bb+' sha256sum '+shlex.quote(runtime+'/'+name)).split()[0]
@@ -84,19 +99,16 @@ def remote_prepare(client, archive, emit=lambda *_: None):
         if total + (32 << 20) > free:
             raise ValueError('Insufficient device staging space')
         execute(client, 'umask 077; '+bb+' mkdir -p /etc/unisoc-ota')
-        channel = client.get_transport().open_session(timeout=20)
-        channel.exec_command('umask 077; '+bb+' cat > ' + shlex.quote(destination + '.new'))
         sent = 0
         with Path(archive).open('rb') as stream:
             expected = digest(stream)
             stream.seek(0)
-            for block in iter(lambda: stream.read(128 << 10), b''):
-                channel.sendall(block)
-                sent += len(block)
+            def progress(count):
+                nonlocal sent
+                sent += count
                 emit('ota_progress', dict(stage='upload', done=sent, total=total))
-        channel.shutdown_write()
-        if channel.recv_exit_status() != 0:
-            raise ValueError('Device upload failed')
+            send(client,'umask 077; '+bb+' cat > '+shlex.quote(destination+'.new'),
+                 iter(lambda:stream.read(128<<10),b''),progress)
         got = execute(client, bb+' sha256sum ' + shlex.quote(destination + '.new')).split()[0]
         if got != expected:
             raise ValueError('Device upload checksum mismatch')

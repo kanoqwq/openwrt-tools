@@ -33,6 +33,12 @@ class Channel:
     def recv_exit_status(self):
         return 0
 
+    def settimeout(self,timeout):self.timeout=timeout
+    def exit_status_ready(self):return True
+    def recv_ready(self):return False
+    def recv_stderr_ready(self):return False
+    def close(self):self.closed=True
+
 
 class ReducedShell:
     """Transport fixture intentionally refuses old-image dependencies."""

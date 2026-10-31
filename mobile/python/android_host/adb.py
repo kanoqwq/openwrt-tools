@@ -14,10 +14,15 @@ import time
 
 
 class Registry:
-    def __init__(self, usb, directory, notify=lambda *_:None):
+    def __init__(self, usb, directory, notify=lambda *_:None, bind_socket=None):
         self.usb=usb;self.directory=Path(directory);self.notify=notify
         self.clients={};self.locks={};self.tcp={};self.state={}
         self.guard=threading.RLock()
+        self.bind_socket=bind_socket
+
+    def tcp_connection(self,address,timeout):
+        from .network import connect
+        return connect(address,timeout,self.bind_socket)
 
     def signer(self):
         from adb_shell.auth.keygen import keygen
@@ -42,12 +47,19 @@ class Registry:
             self.state.pop(serial,None)
 
     def client(self,serial):
-        from adb_shell.adb_device import AdbDevice,AdbDeviceTcp
+        from adb_shell.adb_device import AdbDevice
         from adb_shell.transport.base_transport import BaseTransport
         if not serial:raise ValueError('Select a connected device / 请选择已连接的设备')
         if serial in self.clients:return self.clients[serial]
         if serial in self.tcp:
-            hostname,port=self.tcp[serial];client=AdbDeviceTcp(hostname,port,default_transport_timeout_s=20)
+            from adb_shell.transport.tcp_transport import TcpTransport
+            registry=self
+            class LanTransport(TcpTransport):
+                def connect(self,timeout):
+                    self._connection=registry.tcp_connection((self._host,self._port),timeout)
+                    self._connection.setblocking(False)
+            hostname,port=self.tcp[serial]
+            client=AdbDevice(LanTransport(hostname,port),default_transport_timeout_s=20)
         else:
             rows={row['serial']:row for row in self.usb_devices()}
             row=rows.get(serial)
@@ -107,21 +119,41 @@ class Driver:
             except BaseException:
                 self.registry.close(self.serial);raise
 
-    def shell(self,command,timeout=20,binary=False,sink=None):
+    def shell(self,command,timeout=20,binary=False,sink=None,context=None):
         started=time.monotonic()
         if timeout is not None and timeout<=0:raise subprocess.TimeoutExpired(['android-adb','shell'],timeout)
-        token='__OPENWRT_EXIT_'+secrets.token_hex(16)+'__'
+        nonce=secrets.token_hex(16)
+        token='__OPENWRT_EXIT_'+nonce+'__'
         script=command if binary else '( '+command+'\n); rc=$?; printf "\\n'+token+'%s\\n" "$rc"'
+        heartbeat=b'\n__OPENWRT_WAIT_'+nonce.encode()+b'__\n'
+        if not binary and (timeout is None or timeout>=60):
+            # Keep the command in the foreground. Only this marker writer is
+            # backgrounded; its sleep is reaped on completion/disconnection.
+            script=('( sleeper=; trap \'[ -z "$sleeper" ] || kill "$sleeper" 2>/dev/null; exit\' HUP INT TERM; '
+                    'while :; do sleep 5 & sleeper=$!; wait "$sleeper" || exit; '
+                    'printf '+shlex.quote(heartbeat.decode())+' || exit; done ) & heartbeat=$!; '
+                    '( '+command+'\n); rc=$?; kill "$heartbeat" 2>/dev/null; wait "$heartbeat" 2>/dev/null; '
+                    'printf "\\n'+token+'%s\\n" "$rc"')
         output=bytearray()
+        pending=bytearray()
+        def emit(data):
+            if sink is not None:sink.write(data)
+            else:
+                output.extend(data)
+                if len(output)>32<<20:raise ValueError('ADB response exceeds limit / ADB 响应过大')
         client=self.registry.client(self.serial)
-        for chunk in client.streaming_shell(script,decode=False,transport_timeout_s=timeout or 30,
-                                            read_timeout_s=timeout or 1800):
+        idle=min(timeout or 30,30)
+        for chunk in client.streaming_shell(script,decode=False,transport_timeout_s=idle,read_timeout_s=idle):
             if timeout is not None and time.monotonic()-started>timeout:
                 raise subprocess.TimeoutExpired(['android-adb','shell'],timeout)
-            if sink is not None:sink.write(chunk)
-            else:
-                output.extend(chunk)
-                if len(output)>32<<20:raise ValueError('ADB response exceeds limit / ADB 响应过大')
+            if binary:emit(chunk);continue
+            pending.extend(chunk)
+            while (at:=pending.find(heartbeat))>=0:
+                emit(pending[:at]);del pending[:at+len(heartbeat)]
+                if context is not None:context.log('Device command running / 设备任务执行中',scope='adb-wait')
+            count=max(0,len(pending)-len(heartbeat)+1)
+            if count:emit(pending[:count]);del pending[:count]
+        if pending:emit(pending)
         if binary:return 0,bytes(output)
         marker=b'\n'+token.encode();at=output.rfind(marker)
         if at<0:raise ConnectionError('ADB command lost its final status / ADB 命令未返回完整状态')
@@ -147,7 +179,7 @@ class Driver:
                 try:
                     if op in ('shell','exec-out'):
                         command=tail[0] if len(tail)==1 else shlex.join(tail)
-                        code,output=self.shell(command,timeout,binary=op=='exec-out',sink=sink)
+                        code,output=self.shell(command,timeout,binary=op=='exec-out',sink=sink,context=context)
                     elif op=='push':
                         if len(tail)!=2 or not Path(tail[0]).is_file():raise ValueError('Push requires one local file')
                         r.client(self.serial).push(tail[0],tail[1],transport_timeout_s=timeout or 30,read_timeout_s=timeout or 1800)

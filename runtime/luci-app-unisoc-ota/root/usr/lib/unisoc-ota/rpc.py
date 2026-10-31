@@ -11,6 +11,7 @@ import shutil
 import time
 
 from engine import Engine, Patch, atomic_json, prepare_runtime
+from boot import arm_next_linux
 
 ROOT = os.environ.get('UNISOC_OTA_ROOT', '')
 ENGINE = str(Path(__file__).with_name('engine.py'))
@@ -269,11 +270,15 @@ def dispatch(method, path=None, review_id=None):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return Engine().discard_recovery()
     if method == 'reboot':
-        with (STATE / 'job.lock').open('a') as lock:
+        boot_lock=Path(ROOT or '/')/'run/openwrt-default-boot.lock'
+        boot_lock.parent.mkdir(parents=True,exist_ok=True)
+        with (STATE / 'job.lock').open('a') as lock, boot_lock.open('a') as selection:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(selection, fcntl.LOCK_EX | fcntl.LOCK_NB)
             journal = STATE / 'journal.json'
             if journal.exists() and json.loads(journal.read_text())['status'] in ('applying', 'rolling_back'):
                 raise ValueError('Update recovery is pending')
+            arm_next_linux(Path(ROOT or '/'),Engine().identity()['family'])
             reboot = ['/ota/busybox', 'reboot'] if os.environ.get('UNISOC_OTA_RAM') else ['/sbin/reboot']
             # Let rpcd deliver the acknowledgement before networking stops.
             # The child retains the job lock so another update cannot start
@@ -281,7 +286,7 @@ def dispatch(method, path=None, review_id=None):
             code = 'import os,sys,time; time.sleep(2); os.sync(); os.execv(sys.argv[1],sys.argv[1:])'
             subprocess.Popen([sys.executable, '-c', code, *reboot], stdin=subprocess.DEVNULL,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                             start_new_session=True, pass_fds=(lock.fileno(),))
+                             start_new_session=True, pass_fds=(lock.fileno(),selection.fileno()))
         return {'status': 'rebooting'}
     raise ValueError('Unknown OTA command')
 

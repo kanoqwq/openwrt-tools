@@ -80,8 +80,8 @@ def update_mu300(api, args, root):
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
-        client.connect(host, username='root', password=gui.password if gui else os.environ.get('MU300_SSH_PASSWORD') or getpass.getpass('SSH root password: '),
-                       timeout=15, look_for_keys=False, allow_agent=False)
+        from .ssh_runtime import connect_ssh
+        connect_ssh(client,host,gui.password if gui else os.environ.get('MU300_SSH_PASSWORD') or getpass.getpass('SSH root password: '))
         if gui:
             gui.validate_ssh(client)
         info = execute(client, '''set -e

@@ -14,14 +14,16 @@ from .adb import Registry
 
 
 class Provider:
-    def __init__(self,resources,directory,usb,notify,apk=None):
+    def __init__(self,resources,directory,usb,notify,apk=None,bind_socket=None):
         self.resources=Path(resources)
         self.directory=Path(directory)
-        self.registry=Registry(usb,Path(directory)/'keys',notify)
+        self.registry=Registry(usb,Path(directory)/'keys',notify,bind_socket)
         self.execution_lock=threading.RLock()
         self.apk=apk
 
     def adb(self,serial=None):return self.registry.driver(serial)
+
+    def tcp_connection(self,address,timeout):return self.registry.tcp_connection(address,timeout)
 
     def recovery_import_root(self,directory):
         import re
@@ -111,7 +113,7 @@ class EventStream(io.TextIOBase):
 class Runtime:
     def __init__(self,native,usb,directory,resources,apk=None):
         self.native=native;self.directory=Path(directory);self.directory.mkdir(parents=True,exist_ok=True)
-        self.provider=Provider(resources,directory,usb,self.emit,apk)
+        self.provider=Provider(resources,directory,usb,self.emit,apk,native.bindTcpSocket)
         from backend import host
         host.install(self.provider)
         from backend.service import Service

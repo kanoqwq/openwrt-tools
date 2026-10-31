@@ -18,6 +18,7 @@ import time
 from . import gpt, storage
 from .state import Pending, RecoveryRequired, atomic_json, sha
 from .uninstall import android_volume, partition, table, with_table
+from .transport import AdbCommandError
 
 
 class OnlineDecision(Exception):
@@ -380,8 +381,8 @@ class OnlineShrink:
             self.stage()
             if info['blocks'] == j['old_blocks']:
                 try:
-                    self.a.adb.shell(f'{self.tool} probe /data '+shlex.quote(info['volume']['source']),root=True,timeout=60)
-                except ConnectionError as error:
+                    self.a.adb.shell(f'{self.tool} probe /data '+shlex.quote(info['volume']['source']),root=True,timeout=600)
+                except AdbCommandError as error:
                     return self.decision('Kernel online-resize probe failed / 内核在线缩容能力检查失败: '+str(error))
             if j['state'] == 'prepared':
                 self.ctx.boundary()

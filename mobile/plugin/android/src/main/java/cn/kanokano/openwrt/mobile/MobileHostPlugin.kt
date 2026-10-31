@@ -39,9 +39,12 @@ object MobileRuntime {
     private var runtime: PyObject? = null
     var listener = WeakReference<MobileHostPlugin>(null)
     lateinit var directory: File
+    private lateinit var deviceNetwork: DeviceNetwork
+    fun bindTcpSocket(fd: Int, address: String): Boolean = deviceNetwork.bindSocket(fd, address)
     @Synchronized fun get(activity: Activity): PyObject {
         runtime?.let { return it }
         val context = activity.applicationContext
+        deviceNetwork = DeviceNetwork(context)
         directory = File(context.filesDir, "openwrt").apply { mkdirs() }
         val resources = File(context.filesDir, "openwrt-runtime").apply { mkdirs() }
         fun copyAssets(prefix: String, target: File) {

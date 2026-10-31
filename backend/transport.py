@@ -17,6 +17,10 @@ from .windows_mtp import prepare_devices
 from . import host
 
 
+class AdbCommandError(ConnectionError):
+    """A complete remote command returned nonzero; not a broken connection."""
+
+
 def hidden_process():
     return {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
 
@@ -92,7 +96,7 @@ class Adb:
                       subprocess.run(cmd + list(args), capture_output=True, timeout=timeout, **hidden_process()))
             if check and result.returncode:
                 detail = (result.stderr or result.stdout).decode('utf-8', 'replace')[-4000:].strip()
-                raise ConnectionError('ADB command failed / ADB 命令失败'+(': '+detail if detail else ''))
+                raise AdbCommandError('ADB command failed / ADB 命令失败'+(': '+detail if detail else ''))
             return result.stdout.decode('utf-8', 'replace').replace('\r', '')
         return traced(self.context, 'ADB '+shlex.join(list(args)), perform, output=True)
 

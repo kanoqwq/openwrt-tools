@@ -24,7 +24,7 @@ from .uninstall import Uninstaller, prepare as prepare_uninstall, persist as per
 from .uninstall_growth import PreservationUnavailable
 from .online_shrink import OnlineShrink, OnlineDecision, inspect as inspect_online, allocation as online_allocation, fallback_plan
 from .model_compat import decision as model_decision, runtime_warning, mu300_runtime, require_approval
-from .ssh_runtime import HostRuntimeError, load_ssh
+from .ssh_runtime import HostRuntimeError, load_ssh, connect_ssh
 from . import boot_recovery
 from . import expand_space
 
@@ -529,8 +529,7 @@ class Service:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         try:
-            client.connect(host, username='root', password=p.get('password', ''), timeout=12,
-                           auth_timeout=15, look_for_keys=False, allow_agent=False)
+            connect_ssh(client,host,p.get('password',''))
             key = hashlib.sha256(client.get_transport().get_remote_server_key().asbytes()).hexdigest()
             def read_bytes(script):
                 _, out, err = client.exec_command(script, timeout=15)
@@ -733,8 +732,7 @@ class Service:
             client = paramiko.SSHClient()
             client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             try:
-                client.connect(host, username='root', password=adapter.password or 'root', timeout=5,
-                               auth_timeout=5, look_for_keys=False, allow_agent=False)
+                connect_ssh(client,host,adapter.password or 'root',timeout=10)
                 def read_bytes(script):
                     _, out, _ = client.exec_command(script, timeout=15)
                     value = out.read()

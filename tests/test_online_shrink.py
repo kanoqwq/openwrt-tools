@@ -225,7 +225,7 @@ class OnlineTests(unittest.TestCase):
                 (directory/'f2fs-online-arm64').write_bytes(b'corrupt')
                 with self.assertRaises(ValueError):helper_files()
 
-    def simulate(self, temp, *, interrupt=False, reject=False, cancel=False, mixed=False, launch_reject=False):
+    def simulate(self, temp, *, interrupt=False, reject=False, cancel=False, mixed=False, launch_reject=False, probe_disconnect=False):
         job,r,a,old,new=self.job(temp)
         r['online_shrink']['state']='prepared'
         service=Service('.',job.ctx.store,io.StringIO())
@@ -250,7 +250,10 @@ class OnlineTests(unittest.TestCase):
                 if command.startswith('cat '):return 'phase=complete\nbusy=0'
                 return 'busy=0'
             if ' probe /data ' in command:
-                if reject:raise ConnectionError('errno=25')
+                if probe_disconnect:raise ConnectionError('Reading from fixture timed out (60 seconds)')
+                if reject:
+                    from backend.transport import AdbCommandError
+                    raise AdbCommandError('errno=25')
                 return 'same_size_probe=OK'
             if ' start /data ' in command:
                 machine['launches']+=1
@@ -286,6 +289,14 @@ class OnlineTests(unittest.TestCase):
             r,a,m=self.simulate(temp,reject=True)
             self.assertEqual(r['online_fallback']['state'],'awaiting');self.assertFalse(r['plan']['wipe'])
             self.assertEqual(m['launches'],0);a.execute.assert_not_called();a.adb.call.assert_not_called()
+
+    def test_probe_transport_timeout_never_offers_an_erase_data_fallback(self):
+        with tempfile.TemporaryDirectory() as temp:
+            r,a,m=self.simulate(temp,probe_disconnect=True)
+            self.assertEqual(r['status'],'failed')
+            self.assertNotIn('online_fallback',r)
+            self.assertFalse(r['plan']['wipe'])
+            self.assertEqual(m['launches'],0);a.execute.assert_not_called()
 
     def test_rejected_worker_launch_offers_fallback_only_after_unchanged_readback(self):
         with tempfile.TemporaryDirectory() as temp:

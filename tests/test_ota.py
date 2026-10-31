@@ -621,7 +621,8 @@ class EngineTests(unittest.TestCase):
         spec=importlib.util.spec_from_file_location('ota_reboot_rpc',directory/'rpc.py')
         rpc=importlib.util.module_from_spec(spec);spec.loader.exec_module(rpc)
         rpc.STATE=self.e.state
-        with mock.dict(os.environ,{'UNISOC_OTA_RAM':'/'}), mock.object(rpc.subprocess,'Popen') as launch:
+        rpc.ROOT=str(self.e.root)
+        with mock.dict(os.environ,{'UNISOC_OTA_RAM':'/'}), mock.object(rpc.subprocess,'Popen') as launch, mock.object(rpc,'arm_next_linux'), mock.object(rpc,'Engine',return_value=self.e):
             self.assertEqual(rpc.dispatch('reboot')['status'],'rebooting')
             self.assertEqual(launch.call_args.args[0][-2:],['/ota/busybox','reboot'])
             self.assertIn('time.sleep(2)',launch.call_args.args[0][2])

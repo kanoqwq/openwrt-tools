@@ -291,6 +291,10 @@ class Adapter:
             self.stage('transfer_install')
         return fingerprint
 
+    def connect_ssh(self,client,address,password):
+        from .ssh_runtime import connect_ssh
+        return connect_ssh(client,address,password)
+
     def bind(self, serial):
         self.adb = Adb(self.root, serial)
         self.adb.context = self.ctx

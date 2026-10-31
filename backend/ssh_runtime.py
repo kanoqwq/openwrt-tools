@@ -5,6 +5,25 @@ class HostRuntimeError(RuntimeError):
     pass
 
 
+def connect_ssh(client, address, password, timeout=30):
+    """One handshake, explicit mobile LAN socket; never replay a remote write."""
+    from . import host
+    provider=host.current()
+    connection=provider.tcp_connection((address,22),timeout) if provider is not None else None
+    options=dict(username='root',password=password,look_for_keys=False,allow_agent=False,
+                 timeout=timeout,banner_timeout=60,auth_timeout=60,channel_timeout=60)
+    if connection is not None:options['sock']=connection
+    try:
+        client.connect(address,**options)
+        transport=client.get_transport()
+        if transport is None:raise ConnectionError('SSH closed during authentication / SSH 鉴权过程中连接已关闭')
+        transport.set_keepalive(15)
+    except BaseException:
+        if connection is not None:connection.close()
+        client.close();raise
+    return client
+
+
 def load_ssh():
     try:
         import paramiko
