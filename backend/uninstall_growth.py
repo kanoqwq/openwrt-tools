@@ -37,25 +37,49 @@ def android_shape(device, volume):
 
 
 def android_eligible(device, volume):
-    android_shape(device,volume)
     proof = volume.get('android_growth',{})
+    if proof.get('mapping_kind','dm') == 'raw':
+        raw_android_shape(device,volume)
+    elif proof.get('mapping_kind','dm') == 'dm':
+        android_shape(device,volume)
+    else:
+        raise ValueError('Unknown Android growth mapping')
     if (proof.get('version') != 1 or proof.get('slave') != device['storage']['NODE'] or
             proof.get('manager') not in ('/system/lib64/libfs_mgr.so','/system/bin/vold') or
             any(not re.fullmatch('[a-f0-9]{64}',proof.get(k,'')) for k in ('manager_sha256','resizer_sha256'))):
         raise ValueError('Stock Android pre-mount resize evidence is missing / 缺少原厂 Android 挂载前扩容证据')
 
 
-def inspect_android_growth(adapter, device, volume):
+def raw_android_shape(device, volume):
+    expected='/dev/block/'+device['storage']['NODE']
+    # FBE encrypts file contents, not filesystem metadata, on this route.
+    if (device.get('encryption_type') == 'block' or
+            volume.get('filesystem') != 'f2fs' or volume.get('mapping_overhead') != 0 or
+            volume.get('mapped_bytes') != device['userdata_bytes'] or
+            volume.get('source') not in (expected,expected.replace('/block/','/')) or
+            not re.fullmatch('[a-f0-9]{32}',volume.get('uuid','')) or volume['uuid']=='0'*32):
+        raise ValueError('Raw F2FS growth requires the verified userdata mapping / 原始 F2FS 扩容需确认 userdata 映射一致；可包含文件级加密，但不猜测块级加密布局')
+
+
+def inspect_android_growth(adapter, device, volume, *, mapping='dm'):
     """Read only: inspect the live decrypted mapper and this firmware's tools."""
     volume = dict(volume)
-    android_shape(device,volume)
+    if mapping == 'dm':
+        android_shape(device,volume)
+    elif mapping == 'raw':
+        raw_android_shape(device,volume)
+    else:
+        raise ValueError('Unknown Android growth mapping')
     proof = {'version':1,'slave':device['storage']['NODE']}
     volume['android_growth'] = proof
     node = volume['source'].rsplit('/',1)[-1]
-    slaves = adapter.adb.shell('for p in /sys/class/block/'+node+'/slaves/*; do '
-                              '[ ! -e "$p" ] || echo "${p##*/}"; done',root=True).split()
-    if slaves != [device['storage']['NODE']]:
-        raise ValueError('Encrypted userdata mapping is layered or belongs to another partition / 加密映射存在多层或指向其他分区')
+    if mapping == 'dm':
+        slaves = adapter.adb.shell('for p in /sys/class/block/'+node+'/slaves/*; do '
+                                  '[ ! -e "$p" ] || echo "${p##*/}"; done',root=True).split()
+        if slaves != [device['storage']['NODE']]:
+            raise ValueError('Encrypted userdata mapping is layered or belongs to another partition / 加密映射存在多层或指向其他分区')
+    else:
+        proof['mapping_kind']='raw'
     managers = adapter.adb.shell('if [ -x /system/bin/resize.f2fs ]; then '
                                 'for p in /system/lib64/libfs_mgr.so /system/bin/vold; do '
                                 '[ ! -f "$p" ] || echo "$p"; done; fi',root=True).split()

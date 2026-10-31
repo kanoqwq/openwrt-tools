@@ -98,6 +98,19 @@ class PreMount(unittest.TestCase):
         self.assertIn('"$base/resize.f2fs" -t',wrapper)
         self.assertNotIn('of=/dev/',wrapper)
 
+    def test_expansion_uses_its_own_namespace_and_raw_userdata_guard(self):
+        self.record['expand']=self.record['uninstall']
+        self.volume['android_growth']['mapping_kind']='raw'
+        files=growth.scripts(self.record,self.adapter,self.volume,'c'*64,operation='expand')
+        finish=next(v.decode() for k,v in files.items() if k.endswith('-finish.sh'))
+        wrapper=next(v.decode() for k,v in files.items() if k.endswith('-wrapper.sh'))
+        self.assertIn('openwrt-expand-'+self.record['id'],finish)
+        self.assertNotIn('openwrt-uninstall-',finish)
+        self.assertIn('if [ raw = raw ]',wrapper)
+        self.assertIn('[ "$node" = '+self.record['device']['storage']['NODE']+' ]',wrapper)
+        self.volume['android_growth']['mapping_kind']='bad; command'
+        with self.assertRaises(ValueError):growth.scripts(self.record,self.adapter,self.volume,'c'*64,operation='expand')
+
     def test_e5_ufs_embeds_its_identity_tool_and_preserves_actual_slot(self):
         self.record['device']['slot']='_b'
         self.record['device']['storage']['NODE']='sda75'

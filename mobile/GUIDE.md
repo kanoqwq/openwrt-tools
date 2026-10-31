@@ -47,6 +47,18 @@ Diff Studio 的旧版输入可以是完整 ZIP 或 JSON 版本摘要，新版输
 
 缩容安装可以按检查结果归还空间；使用原有空闲空间安装时，通常释放为未分配空间。无法保留数据时，必须再次确认清空并重新查看计划。只删除手机里的安装记录不会卸载目标 OpenWrt，也不会归还目标空间。
 
+### 检查空闲空间并扩容 Android
+
+目标设备进入 Android、完成初始化并允许调试和 root 后，在“高级选项”选择“检查空闲空间并扩容 Android”，检查设备或点击“扫描未分配空间”。页面显示磁盘总容量、userdata 容量、全部 GPT 未分配区段及可直接回收容量。这里不是 Android 内部的剩余可用空间。
+
+仅回收紧邻 userdata 尾部的空闲区段。不移动或删除其他分区，不覆盖已识别到的隐藏文件系统；如果 OpenWrt 或其他分区挡在中间，后面的空间不能直接合并。本功能不卸载独立 OpenWrt，支持检测到的 eMMC/UFS 及 512/4096 字节逻辑扇区。
+
+查看扩容计划后，核对设备、原容量、新容量和数据处理方式。优先保数据扩容：提交新的 GPT 尾部边界，重启让 Android 读取新边界，再验证并按需扩容文件系统。ext4 使用配套工具的在线扩容；F2FS 使用本机 Android 经核验的挂载前工具，必要时临时修改当前 Android boot 的 ramdisk，随后恢复原件。不会在挂载中的 F2FS 上直接执行离线扩容，也不会导出加密密钥。
+
+不支持保数据时会解释原因。只有输入小写 `yes` 才会准备清空数据计划，下一页仍需再次确认。**清空会删除 Android 应用、账号、照片、内部存储，以及 userdata 里面的 OpenWrt 镜像；独立 OpenWrt 分区和 TF 不删除。** 原厂 Recovery 负责格式化，不把密文直接当文件系统扩容。保数据执行后仍无法完成时，也必须重新选择和确认，不会自动清空。
+
+执行过程中可能多次重启。清空后请完成 Android 初始化、调试和 root 授权，保留并继续原记录。GPT 已提交或 Recovery 已收到清空请求后，暂停不能撤回设备上的操作。备份包含修改前的 GPT、misc；需要 Android 挂载前维护时另存该槽 boot。恢复记录在完成前不可删除，完成后可在记录管理器导出或删除。
+
 ### 暂停、关闭与失败恢复
 
 记录、备份和 ADB 身份保存在本 App 私有空间。首页或“关于与备份”可打开安装记录管理。导出恢复 ZIP 会带上记录及其目录内的备份；导入时更新本机路径，不改动分区备份字节。
@@ -109,6 +121,18 @@ Release Index accepts ZIPs, extracted folders and raw rootfs. Collections can us
 Return the target to Android, enable debugging and root, and choose uninstall under Advanced options. The installer checks host records and target evidence. Android data preservation depends on the filesystem, encryption mapping, stock tools and partition geometry.
 
 Space from a shrink installation can be returned when verified. An installation in pre-existing free space is normally released as unallocated space. An erase-data alternative requires another confirmation and a new plan. Deleting a control-phone record does not uninstall target OpenWrt or return target space.
+
+### Inspect free space and expand Android
+
+Boot the target into initialized, rooted Android and allow debugging. Under Advanced options choose Inspect free space and expand Android, then inspect the device or scan unallocated space. The view shows disk size, userdata size, GPT gaps and directly reclaimable capacity. This is not the free space inside Android's filesystem.
+
+Only a gap directly following userdata can be reclaimed. Other partitions and recognized hidden filesystems are preserved. Space beyond an intervening OpenWrt or other partition cannot be merged directly. This does not uninstall independent OpenWrt and supports detected eMMC/UFS storage with native 512/4096-byte sectors.
+
+Review the device, old/new capacities and data handling. Preservation is preferred: commit the enlarged GPT boundary, restart Android to load it, then verify and grow the filesystem if needed. Ext4 uses the package's online resize tool. F2FS uses verified stock Android pre-mount tools; a temporary ramdisk hook may be installed in the current Android boot and the original is restored afterwards. Mounted F2FS is never passed to an offline resizer, and encryption keys are never exported.
+
+If preservation is unsupported, the reason is shown. Type lowercase `yes` to prepare an erase-data plan and confirm it separately on the next page. **Resetting erases Android apps, accounts, photos, internal storage and any OpenWrt image inside userdata. Separate OpenWrt partitions and TF installations remain.** Stock recovery formats the data; ciphertext is never resized as a filesystem. A later preservation failure still requires this explicit reset decision.
+
+Several restarts may be required. After a reset, finish Android setup, debugging and root, and continue the original record. Pausing cannot undo a committed GPT change or an armed recovery request. Backups contain the original GPT and misc, plus the Android-slot boot only if pre-mount maintenance needs it. Pending expansion recovery records cannot be deleted. Export or delete completed records through record management.
 
 ### Recovery and results
 

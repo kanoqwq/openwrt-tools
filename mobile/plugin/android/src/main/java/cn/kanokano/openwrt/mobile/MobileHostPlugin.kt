@@ -115,7 +115,7 @@ class MobileHostPlugin(private val activity: Activity) : Plugin(activity) {
         worker.execute {
             var completed = false
             try {
-                if (args.command in listOf("start", "resume", "retry", "probe", "probe_update", "plan", "export", "import", "delete_record", "ota_analyze", "ota_export", "ota_apply", "mobile_index")) startTask(args.command in listOf("delete_record", "export", "import", "ota_analyze", "ota_export", "mobile_index"))
+                if (args.command in listOf("start", "resume", "retry", "probe", "probe_update", "plan", "expand_reset", "export", "import", "delete_record", "ota_analyze", "ota_export", "ota_apply", "mobile_index")) startTask(args.command in listOf("delete_record", "export", "import", "ota_analyze", "ota_export", "mobile_index"))
                 val runtime = MobileRuntime.get(activity)
                 val result = org.json.JSONTokener(runtime.callAttr("request", args.command, args.parameters).toString()).nextValue()
                 completed = true

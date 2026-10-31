@@ -222,14 +222,14 @@ class Journal(unittest.TestCase):
             adapter=SimpleNamespace(probe=probe,execute=Mock())
             service.adapters=lambda *_:adapter
             with self.subTest(change=change),self.assertRaises((ValueError,RecoveryRequired)):
-                service.rebind_uninstall(record,selected,self.package)
+                service.rebind_maintenance(record,selected,self.package)
             self.assertEqual(record['device']['serial'],original_serial)
             adapter.execute.assert_not_called()
         adapter=SimpleNamespace(probe=Mock(return_value=self.device.copy()),execute=Mock())
         service.adapters=lambda *_:adapter
         with DeviceLock(self.store.base,IDENTITY),self.assertRaises(RuntimeError):
-            service.rebind_uninstall(record,selected,self.package)
-        service.rebind_uninstall(record,selected,self.package)
+            service.rebind_maintenance(record,selected,self.package)
+        service.rebind_maintenance(record,selected,self.package)
         self.assertEqual(record['device']['serial'],selected)
         self.assertEqual(record['transport_history'][0]['serial'],original_serial)
         self.assertEqual(record['device']['cid'],IDENTITY)

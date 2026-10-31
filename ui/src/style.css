@@ -331,3 +331,7 @@ input:not([type=checkbox]):hover,select:hover {border-color:hsl(var(--primary)/.
   .purpose:hover>svg,.ui-button:active:not(:disabled),.method-options button:active {transform:none;}
   [data-sonner-toast] {transition:none!important;}
 }
+.space-overview h2{display:flex;align-items:center;gap:9px;}
+.space-gaps{display:grid;gap:10px;margin-top:14px;}
+.space-gap{min-width:0;display:grid;gap:5px;padding:12px;border:1px solid hsl(var(--border));border-radius:10px;background:hsl(var(--background));}
+.space-gap p,.space-gap small{margin:0;overflow-wrap:anywhere;}

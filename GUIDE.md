@@ -106,6 +106,18 @@ FBE＋metadata 加密的 F2FS 不再仅因加密就要求清空：核实完整�
 
 卸载请求写入后，暂停或关闭安装器只停止电脑上的等待，不会撤回设备上的卸载或已确认的重置，请保持供电。关闭安装器或电脑重启后，从保存记录继续卸载。正常重连不会重复清空数据；如提示分区布局变化或恢复证据不足，请导出诊断及备份后寻求协助，不要重新创建安装任务或手动恢复旧分区表。卸载记录和备份保留在电脑上，卸载不代表安全擦除历史数据。
 
+### 检查空闲空间并扩容 Android
+
+目标设备进入 Android、完成初始化并允许调试和 root 后，在“高级选项”选择“检查空闲空间并扩容 Android”，检查设备或点击“扫描未分配空间”。页面显示磁盘总容量、userdata 容量、全部 GPT 未分配区段及可直接回收容量。这里不是 Android 内部的剩余可用空间。
+
+仅回收紧邻 userdata 尾部的空闲区段。不移动或删除其他分区，不覆盖已识别到的隐藏文件系统；如果 OpenWrt 或其他分区挡在中间，后面的空间不能直接合并。本功能不卸载独立 OpenWrt，支持检测到的 eMMC/UFS 及 512/4096 字节逻辑扇区。
+
+查看扩容计划后，核对设备、原容量、新容量和数据处理方式。优先保数据扩容：提交新的 GPT 尾部边界，重启让 Android 读取新边界，再验证并按需扩容文件系统。ext4 使用配套工具的在线扩容；F2FS 使用本机 Android 经核验的挂载前工具，必要时临时修改当前 Android boot 的 ramdisk，随后恢复原件。不会在挂载中的 F2FS 上直接执行离线扩容，也不会导出加密密钥。
+
+不支持保数据时会解释原因。只有输入小写 `yes` 才会准备清空数据计划，下一页仍需再次确认。**清空会删除 Android 应用、账号、照片、内部存储，以及 userdata 里面的 OpenWrt 镜像；独立 OpenWrt 分区和 TF 不删除。** 原厂 Recovery 负责格式化，不把密文直接当文件系统扩容。保数据执行后仍无法完成时，也必须重新选择和确认，不会自动清空。
+
+执行过程中可能多次重启。清空后请完成 Android 初始化、调试和 root 授权，保留并继续原记录。GPT 已提交或 Recovery 已收到清空请求后，暂停不能撤回设备上的操作。备份包含修改前的 GPT、misc；需要 Android 挂载前维护时另存该槽 boot。恢复记录在完成前不可删除，完成后可在记录管理器导出或删除。
+
 ### 暂停、关闭与失败恢复
 
 需要退出时，点击“在安全边界暂停”，等待页面显示已暂停后再关闭。正在进行的写入需要先完成；设备已开始离线准备时，即使电脑上的任务已暂停，也请继续为设备供电。
@@ -254,6 +266,18 @@ Keep power connected after confirmation and wait for offline removal and automat
 If the wireless address changed after reset or you switched to USB, finish Android setup, debugging and root. On the saved-record page, expand Change removal device connection, refresh and explicitly select the same device before continuing. A different hardware identity is rejected. No selection is needed if the connection did not change.
 
 Once removal is armed, pausing or closing the installer stops only the computer’s wait; it does not withdraw removal or an approved reset on the device. Keep power connected. After closing the app or restarting the computer, continue from its saved record. Reconnection does not repeat a completed reset. If partition changes or insufficient recovery evidence are reported, export diagnostics and backups for assistance. Do not start a new installation or manually restore an old partition table. Records stay on the computer; removal is not secure erasure of historical data.
+
+### Inspect free space and expand Android
+
+Boot the target into initialized, rooted Android and allow debugging. Under Advanced options choose Inspect free space and expand Android, then inspect the device or scan unallocated space. The view shows disk size, userdata size, GPT gaps and directly reclaimable capacity. This is not the free space inside Android's filesystem.
+
+Only a gap directly following userdata can be reclaimed. Other partitions and recognized hidden filesystems are preserved. Space beyond an intervening OpenWrt or other partition cannot be merged directly. This does not uninstall independent OpenWrt and supports detected eMMC/UFS storage with native 512/4096-byte sectors.
+
+Review the device, old/new capacities and data handling. Preservation is preferred: commit the enlarged GPT boundary, restart Android to load it, then verify and grow the filesystem if needed. Ext4 uses the package's online resize tool. F2FS uses verified stock Android pre-mount tools; a temporary ramdisk hook may be installed in the current Android boot and the original is restored afterwards. Mounted F2FS is never passed to an offline resizer, and encryption keys are never exported.
+
+If preservation is unsupported, the reason is shown. Type lowercase `yes` to prepare an erase-data plan and confirm it separately on the next page. **Resetting erases Android apps, accounts, photos, internal storage and any OpenWrt image inside userdata. Separate OpenWrt partitions and TF installations remain.** Stock recovery formats the data; ciphertext is never resized as a filesystem. A later preservation failure still requires this explicit reset decision.
+
+Several restarts may be required. After a reset, finish Android setup, debugging and root, and continue the original record. Pausing cannot undo a committed GPT change or an armed recovery request. Backups contain the original GPT and misc, plus the Android-slot boot only if pre-mount maintenance needs it. Pending expansion recovery records cannot be deleted. Export or delete completed records through record management.
 
 ### Recovery and results
 

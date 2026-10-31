@@ -304,8 +304,8 @@ class Adapter:
             self.legacy.ANDROID_SLOT = self.legacy.LINUX_SLOT = None
             self.legacy.find_adb = lambda: None
 
-    def probe(self, serial, method='part'):
-        if method not in ('tf', 'part', 'reinstall', 'image', 'boot', 'uninstall'):
+    def probe(self, serial, method='part', *, gpt_scan=True):
+        if method not in ('tf', 'part', 'reinstall', 'image', 'boot', 'uninstall', 'expand'):
             raise ValueError('Unsupported Android installation method / 不支持的 Android 安装方式')
         self.bind(serial)
         devices = self.adb.devices()
@@ -369,9 +369,12 @@ class Adapter:
         if storage.get('ROOT'):
             node = storage['ROOT']
             storage['ROOT_START'], storage['ROOT_SIZE'] = map(int, self.adb.shell('cat /sys/class/block/'+node+'/start /sys/class/block/'+node+'/size', root=True).split())
-        if method != 'boot':
+        if method != 'boot' and gpt_scan:
             space = self.read_gpt(storage)
             device['gpt'] = {k: v for k, v in space.items() if k not in ('first', 'last')}
+            if method == 'expand':
+                from .expand_space import inspect_space
+                _,device['space'] = inspect_space(self,device,space)
         if self.kind == 'e5' and method == 'tf':
             # Reuse the existing internal-vs-removable selection policy.
             # Do not catch discovery failures: TF must stop on missing/ambiguous cards.

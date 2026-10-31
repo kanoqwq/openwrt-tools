@@ -71,9 +71,13 @@ device=
 for arg do device=$arg; done
 case "$device" in /*) device=$(readlink -f "$device") ;; esac
 node=${device##*/}
-if ! [ -d "/sys/class/block/$node/dm" ] ||
-   [ "$(ls /sys/class/block/$node/slaves)" != @NODE@ ]; then
-    exec "$base/$name" "$@"
+if [ @MAPPING@ = raw ]; then
+    [ "$node" = @NODE@ ] || exec "$base/$name" "$@"
+else
+    if ! [ -d "/sys/class/block/$node/dm" ] ||
+       [ "$(ls /sys/class/block/$node/slaves)" != @NODE@ ]; then
+        exec "$base/$name" "$@"
+    fi
 fi
 exec >>"$base/worker.log" 2>&1
 echo "Android pre-mount: $name $node"
@@ -146,7 +150,7 @@ set -eu
 base=@BASE@
 [ "$(getprop ro.boot.slot_suffix)" = _@SLOT@ ]
 # Preserve the actual pre-mount result across the return to original Android.
-dir=/data/local/tmp/openwrt-uninstall-@ID@-android-growth
+dir=/data/local/tmp/openwrt-@OPERATION@-@ID@-android-growth
 mkdir -p "$dir"
 chmod 700 "$dir"
 for file in setup.log worker.log result; do
@@ -168,7 +172,8 @@ setprop sys.powerctl reboot
 '''
 
 
-def scripts(record, adapter, volume, android_sha):
+def scripts(record, adapter, volume, android_sha, *, operation='uninstall'):
+    if operation not in ('uninstall','expand'): raise ValueError('Unknown Android growth operation')
     slot = record['device']['slot'].removeprefix('_')
     other = 'b' if slot == 'a' else 'a'
     identity = record['id']
@@ -177,17 +182,19 @@ def scripts(record, adapter, volume, android_sha):
     node = record['device']['storage']['NODE']
     disk = storage.disk_node(node)
     target = record['plan']['android_bytes']
-    before = record['uninstall']['volume']['filesystem_bytes']
-    uuid = record['uninstall']['volume']['uuid']
+    before = record[operation]['volume']['filesystem_bytes']
+    uuid = record[operation]['volume']['uuid']
     if not re.fullmatch('[a-f0-9]{32}', uuid) or target % 512 or before <= 0 or target <= before:
         raise ValueError('Invalid Android growth geometry')
     proof = volume['android_growth']
+    if proof.get('mapping_kind','dm') not in ('raw','dm'):
+        raise ValueError('Unknown Android growth mapping')
     # Both are copied from the live stock firmware, not package maintenance
     # binaries with potentially different vendor feature support.
     fsck_sha = adapter.adb.shell('sha256sum /system/bin/fsck.f2fs', root=True).split()[0]
     if not re.fullmatch('[a-f0-9]{64}', fsck_sha):
         raise ValueError('Cannot verify stock F2FS checker')
-    meta = record['uninstall']
+    meta = record[operation]
     checks = []
     for name, offset, count in [('after-first', 0, meta['front']), ('after-last', meta['tail'], meta['total']-meta['tail'])]:
         checks.append('[ "$(dd if=/dev/block/'+disk+' bs=512 skip='+str(offset)+' count='+str(count)+
@@ -195,7 +202,7 @@ def scripts(record, adapter, volume, android_sha):
     library = storage.library(adapter.root)
     identity_function = 'mu300_storage_identity' if adapter.kind == 'mu300' else 'e5_storage_identity'
     values = {'BASE':'/dev/openwrt-grow-'+identity, 'NODE':node, 'DISK':disk,
-              'ID':identity, 'SLOT':slot, 'OTHER':other, 'TARGET':str(target),
+              'ID':identity, 'OPERATION':operation, 'MAPPING':proof.get('mapping_kind','dm'), 'SLOT':slot, 'OTHER':other, 'TARGET':str(target),
               'SECTORS':str(target//512), 'BEFORE':str(before), 'MINIMUM':str(target-(4 << 20)),
               'UUID':uuid, 'CID':record['device']['cid'], 'ANDROID_SHA':android_sha,
               'FSCK_SHA':fsck_sha, 'RESIZE_SHA':proof['resizer_sha256'],
@@ -245,7 +252,7 @@ def prepare_image(adb, ctx, remote, local, source, files, tool_sha):
     return updated
 
 
-def stage(worker, device, volume):
+def stage(worker, device, volume, *, operation='uninstall'):
     """Build/verify the temporary Android image; arm it within a journal effect."""
     adb, ctx, record = worker.adapter.adb, worker.ctx, worker.r
     ctx.log('正在准备 Android 挂载前扩容，完成后恢复原启动镜像 / Preparing stock Android pre-mount growth with boot restoration',scope='android-growth')
@@ -253,8 +260,8 @@ def stage(worker, device, volume):
         raise RecoveryRequired('Android growth requires the verified restored partition layout')
     tool_sha = capability(adb)
     slot = device['slot'].removeprefix('_')
-    remote = '/data/local/tmp/openwrt-uninstall-'+record['id']+'-android-growth'
-    local = ctx.directory/'uninstall/android-growth'
+    remote = '/data/local/tmp/openwrt-'+operation+'-'+record['id']+'-android-growth'
+    local = ctx.directory/operation/'android-growth'
     local.mkdir(parents=True, exist_ok=True)
     boot_path = '/dev/block/by-name/boot_'+slot
     source = local/'android.img'
@@ -264,15 +271,15 @@ def stage(worker, device, volume):
     # Keep the current working Android image, independently of any earlier
     # pre-reset backup. Only its ramdisk changes temporarily; the stock kernel
     # and the actual Android slot (including logical system/vendor) are kept.
-    files = scripts(record, worker.adapter, volume, android_sha)
+    files = scripts(record, worker.adapter, volume, android_sha, operation=operation)
     updated = prepare_image(adb,ctx,remote,local,source,files,tool_sha)
     patched = local/'maintenance.img'; patched.write_bytes(updated)
     patched_sha = sha(patched)
-    record.update(uninstall_android_growth_sha256=patched_sha,
-                  uninstall_android_growth_source_sha256=android_sha,
-                  uninstall_android_growth_attempted=True,
-                  uninstall_growth_pending=True,
-                  uninstall_wait_boot_id=device['boot_id'])
+    record.update({operation+'_android_growth_sha256':patched_sha,
+                   operation+'_android_growth_source_sha256':android_sha,
+                   operation+'_android_growth_attempted':True,
+                   operation+'_growth_pending':True,
+                   operation+'_wait_boot_id':device['boot_id']})
     ctx.store.save(record)
     if worker.layout_state() != 'after':
         raise RecoveryRequired('Layout changed during Android growth preparation')
@@ -286,35 +293,35 @@ def stage(worker, device, volume):
               'dd if='+remote+'/android.img of='+boot_path+' bs=1048576 conv=fsync; '+
               '[ "$(sha256sum '+boot_path+' | cut -d\' \''+' -f1)" = '+android_sha+' ]; '+
               'echo ANDROID_GROWTH_BOOT_RESTORED; exit 1; fi')
-    ctx.stage('uninstall_prepare')
-    key = 'uninstall-android-growth-arm'
+    ctx.stage('expand_android_prepare' if operation=='expand' else 'uninstall_prepare')
+    key = operation+'-android-growth-arm'
     if record['effects'].get(key):
         record['effects'].pop(key)
         ctx.store.save(record)
     ctx.effect(key, lambda:adb.shell(script, root=True, timeout=None))
-    ctx.stage('uninstall_offline', 'waiting_device', reboot_manually=False)
+    ctx.stage(operation+'_offline', 'waiting_device', reboot_manually=False)
     try:
         adb.call('reboot')
     except (ConnectionError, OSError, TimeoutError, subprocess.TimeoutExpired):
         ctx.log('Expected ADB loss during one-shot Android pre-mount growth', scope='uninstall')
 
 
-def report(worker):
-    remote = '/data/local/tmp/openwrt-uninstall-'+worker.r['id']+'-android-growth'
+def report(worker, *, operation='uninstall'):
+    remote = '/data/local/tmp/openwrt-'+operation+'-'+worker.r['id']+'-android-growth'
     text = worker.adapter.adb.shell('for f in result setup.log worker.log; do '
                                    '[ ! -f '+remote+'/$f ] || tail -c 12000 '+remote+'/$f; done', root=True)
     worker.ctx.log(text, scope='android-growth')
     return text
 
 
-def restore(worker, device):
+def restore(worker, device, *, operation='uninstall'):
     """Recover an interrupted hook/restore by exact boot readback, never GPT."""
     record, adb, ctx = worker.r, worker.adapter.adb, worker.ctx
-    if not record.get('uninstall_android_growth_attempted'):
+    if not record.get(operation+'_android_growth_attempted'):
         return
-    expected = record.get('uninstall_android_growth_source_sha256')
-    patched = record.get('uninstall_android_growth_sha256')
-    source = ctx.directory/'uninstall/android-growth/android.img'
+    expected = record.get(operation+'_android_growth_source_sha256')
+    patched = record.get(operation+'_android_growth_sha256')
+    source = ctx.directory/operation/'android-growth/android.img'
     if (not re.fullmatch('[a-f0-9]{64}',expected or '') or
             not re.fullmatch('[a-f0-9]{64}',patched or '') or
             not source.is_file() or source.stat().st_size != 64 << 20 or sha(source) != expected):
@@ -326,14 +333,14 @@ def restore(worker, device):
     if current == expected:
         # ADB may have disconnected after the device-side commit. Exact boot
         # readback proves this step independently of its host-side receipt.
-        entry=record['effects'].get('uninstall-android-growth-arm')
+        entry=record['effects'].get(operation+'-android-growth-arm')
         if entry:
             entry.update(state='done',result='original Android restored by readback')
             record['unsafe']=False;ctx.store.save(record)
         return adb.shell('getprop sys.openwrt.growth',root=True).strip() == record['id']
     if current != patched:
         raise RecoveryRequired('Android growth boot is neither the backup nor our maintenance image / Android 启动镜像与扩容备份不符，不会覆盖')
-    remote='/data/local/tmp/openwrt-uninstall-'+record['id']+'-growth-restore'
+    remote='/data/local/tmp/openwrt-'+operation+'-'+record['id']+'-growth-restore'
     adb.shell('umask 077; mkdir -p '+remote+'; chown 2000:2000 '+remote+'; chmod 700 '+remote,root=True)
     push_chunks(adb.call,lambda s:adb.shell(s,root=True),source,remote+'/android.img',ctx)
     script=('set -eu; set -o pipefail; [ "$(getprop ro.boot.slot_suffix)" = _'+slot+' ]; '+
@@ -341,24 +348,24 @@ def restore(worker, device):
             '[ "$(sha256sum '+remote+'/android.img | cut -d\' \''+' -f1)" = '+expected+' ]; '+
             'dd if='+remote+'/android.img of='+target+' bs=1048576 conv=fsync; '+
             '[ "$(sha256sum '+target+' | cut -d\' \''+' -f1)" = '+expected+' ]')
-    key='uninstall-android-growth-restore'
+    key=operation+'-android-growth-restore'
     if record['effects'].get(key):
         record['effects'].pop(key);ctx.store.save(record)
     ctx.effect(key,lambda:adb.shell(script,root=True,timeout=None))
     return True
 
 
-def cleanup(worker):
+def cleanup(worker, *, operation='uninstall'):
     """Remove only this successful transaction's ordinary staging files."""
     record=worker.r
-    if not record.get('uninstall_android_growth_attempted'):
+    if not record.get(operation+'_android_growth_attempted'):
         return
-    report(worker)
+    report(worker, operation=operation)
     prefix='openwrt-grow-'+record['id']
-    remote='/data/local/tmp/openwrt-uninstall-'+record['id']+'-android-growth'
+    remote='/data/local/tmp/openwrt-'+operation+'-'+record['id']+'-android-growth'
     names=['android.img','maintenance.img','kernel','ramdisk.cpio','header','dtb',
            'kernel_dtb','extra','second','recovery_dtbo','result','setup.log','worker.log',
            prefix+'.rc',prefix+'-setup.sh',prefix+'-wrapper.sh',prefix+'-finish.sh',prefix+'-ufs-id']
-    restore_dir='/data/local/tmp/openwrt-uninstall-'+record['id']+'-growth-restore'
+    restore_dir='/data/local/tmp/openwrt-'+operation+'-'+record['id']+'-growth-restore'
     worker.adapter.adb.shell('rm -f '+' '.join(remote+'/'+name for name in names)+' '+
                              restore_dir+'/android.img; rmdir '+remote+' '+restore_dir+' 2>/dev/null || true',root=True)

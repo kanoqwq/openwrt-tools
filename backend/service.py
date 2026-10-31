@@ -26,8 +26,9 @@ from .online_shrink import OnlineShrink, OnlineDecision, inspect as inspect_onli
 from .model_compat import decision as model_decision, runtime_warning, mu300_runtime, require_approval
 from .ssh_runtime import HostRuntimeError, load_ssh
 from . import boot_recovery
+from . import expand_space
 
-METHODS = {'tf', 'part', 'reinstall', 'image', 'boot', 'update', 'uninstall'}
+METHODS = {'tf', 'part', 'reinstall', 'image', 'boot', 'update', 'uninstall', 'expand'}
 
 
 def plan_install(package, device, choices):
@@ -36,6 +37,8 @@ def plan_install(package, device, choices):
         raise ValueError('Unknown installation method')
     if device.get('readiness') != 'ready':
         raise ValueError('Device is not ready / 设备尚未就绪')
+    if method == 'expand':
+        raise ValueError('Expansion requires device evidence planning / 扩容需要专用的设备证据检查与扩容计划')
     if method == 'uninstall':
         raise ValueError('Uninstall requires device evidence planning / 卸载需要专用的设备证据检查与卸载计划')
     if method == 'update':
@@ -115,6 +118,7 @@ class Service:
         self.worker = None
         self.package = None
         self.uninstall_reset_prompt = None
+        self.expand_reset_prompt = None
         self.adapters = Adapter
         self.stop = threading.Event()
         self.verification_lock = threading.Lock()
@@ -180,6 +184,9 @@ class Service:
             record = self.store.load(tid)
             if self.record_running(tid):
                 raise ValueError('This installation record is in use / 此安装记录正在使用，不能删除')
+            if (record['choices'].get('method')=='expand' and record['status']!='completed' and
+                    any(record['effects'].get(key) for key in ('expand-gpt','expand-android-growth-arm','expand-reset'))):
+                raise RecoveryRequired('Finish expansion before deleting its recovery record / 请先完成扩容，再删除所需的恢复记录与备份')
             with ExitStack() as locks:
                 for identity in sorted({v for k in ('serial', 'cid') if isinstance(v := record['device'].get(k), str) and v}):
                     locks.enter_context(DeviceLock(self.store.base, identity))
@@ -245,7 +252,7 @@ class Service:
             if self.worker and self.worker.is_alive():
                 record = self.active.record if self.active else {}
                 if (record.get('unsafe') or record.get('status') not in ('waiting_user','waiting_device') or
-                        record.get('stage') not in ('uninstall_offline','android_boot','android_setup','usb_debugging',
+                        record.get('stage') not in ('uninstall_offline','expand_offline','android_boot','android_setup','usb_debugging',
                                                     'debug_authorization','magisk','root_permission')):
                     raise ValueError('Pause before changing ADB connections / 请先暂停任务，再更改 ADB 连接')
             return self.adb().connect(p.get('address'))
@@ -286,6 +293,14 @@ class Service:
                 for identity in sorted({record['device']['serial'],record['device']['cid']}):
                     locks.enter_context(DeviceLock(self.store.base,identity))
                 return fallback_plan(self,record,p)
+        if command == 'expand_reset':
+            if self.worker and self.worker.is_alive():
+                raise ValueError('Wait for the active operation / 请等待当前操作结束')
+            record=self.store.load(p['transaction'])
+            with ExitStack() as locks:
+                for identity in sorted({record['device']['serial'],record['device']['cid']}):
+                    locks.enter_context(DeviceLock(self.store.base,identity))
+                return expand_space.confirm_reset(self,record,p)
         if command == 'plan':
             if not self.package:
                 raise ValueError('Verify package first')
@@ -296,6 +311,9 @@ class Service:
             elif choices.get('method') == 'uninstall':
                 uninstall_adapter = self.adapter()
                 device = uninstall_adapter.probe(p['serial'], 'uninstall')
+            elif choices.get('method') == 'expand':
+                expansion_adapter=self.adapter()
+                device=expansion_adapter.probe(p['serial'],'expand')
             else:
                 plan_adapter = self.adapter()
                 device = plan_adapter.probe(p['serial'], choices['method'])
@@ -306,15 +324,17 @@ class Service:
                 active_slot = device.get('slot')
                 if active_slot not in ('_a','_b'):
                     raise ValueError('Cannot identify current Android slot')
-                probe_adapter = uninstall_adapter if choices.get('method') == 'uninstall' else plan_adapter
+                probe_adapter = (uninstall_adapter if choices.get('method') == 'uninstall' else
+                                 expansion_adapter if choices.get('method') == 'expand' else plan_adapter)
                 other = 'b' if active_slot == '_a' else 'a'
                 header = probe_adapter.adb.read('dd if=/dev/block/by-name/boot_'+other+' bs=512 count=8 2>/dev/null')
                 if len(header) != 4096:
                     raise ValueError('Incomplete opposite boot header / 另一启动槽读取不完整')
-                pending = any(item['choices'].get('method') == 'uninstall' and item['device'].get('cid') == device.get('cid')
-                              and item['status'] != 'completed' and item['effects'].get('uninstall-arm') for item in self.store.list())
+                pending = any(item['device'].get('cid') == device.get('cid') and item['status'] != 'completed' and
+                              (item['choices'].get('method') == 'uninstall' and item['effects'].get('uninstall-arm') or
+                               item['choices'].get('method') == 'expand' and item['effects'].get('expand-gpt')) for item in self.store.list())
                 if pending or b'openwrt.uninstall=1' in header[44:1580].split(b'\0',1)[0].split():
-                    raise RecoveryRequired('Uninstall is already pending. Resume/import its saved record; do not create another operation. / 已有未完成的卸载，请继续或导入卸载记录，不要创建新操作。')
+                    raise RecoveryRequired('Storage maintenance is already pending. Resume/import its saved record; do not create another operation. / 已有未完成的存储维护，请继续或导入原记录，不要创建新操作。')
             if choices.get('method') == 'uninstall':
                 def authorize_reset(fingerprint):
                     expected = self.uninstall_reset_prompt
@@ -327,6 +347,18 @@ class Service:
                     return {'confirmation_required':'format_android','reason':str(error),'reset_token':token,
                             'model':device['model'],'serial_hint':device['serial'][-4:]}
                 self.uninstall_reset_prompt = None
+            elif choices.get('method') == 'expand':
+                def authorize_expansion_reset(fingerprint):
+                    expected=self.expand_reset_prompt
+                    return bool(expected and p.get('reset_confirmation')=='yes' and p.get('reset_token')==expected['token'] and fingerprint==expected['fingerprint'])
+                try:
+                    plan,expansion_metadata,expansion_files=expand_space.prepare(expansion_adapter,device,authorize_expansion_reset)
+                except PreservationUnavailable as error:
+                    token=secrets.token_urlsafe(24)
+                    self.expand_reset_prompt={'token':token,'fingerprint':error.fingerprint}
+                    return {'confirmation_required':'format_android','operation':'expand','reason':str(error),
+                            'reset_token':token,'model':device['model'],'serial_hint':device['serial'][-4:]}
+                self.expand_reset_prompt=None
             else:
                 if choices.get('method') == 'boot':
                     boot_info, boot_image = boot_recovery.prepare(plan_adapter, device, force=choices.get('repair_boot') is True)
@@ -350,12 +382,16 @@ class Service:
                 boot_recovery.persist(Context(self.store, record, lambda *_:None), boot_info, boot_image)
             if choices.get('method') == 'uninstall':
                 persist_uninstall(Context(self.store, record, lambda *_:None), uninstall_metadata, uninstall_files)
+            if choices.get('method') == 'expand':
+                expand_space.persist(Context(self.store,record,lambda *_:None),expansion_metadata,expansion_files)
             return self.public(record)
         if command in ('start', 'resume', 'retry'):
             record = self.store.load(p['transaction'])
             require_approval(record, record['device'])
             if record.get('online_fallback',{}).get('state') == 'awaiting':
                 raise ValueError('Choose whether to prepare an erase-data plan / 请先选择是否准备清空数据的后备计划')
+            if record.get('expand_reset_offer',{}).get('state')=='awaiting':
+                raise ValueError('Review the expansion reset choice first / 请先确认扩容是否改为清空数据方案')
             nv = record.get('nv_recovery', {})
             if nv.get('state') == 'awaiting':
                 if (p.get('nv_confirmation') != 'yes' or
@@ -376,9 +412,9 @@ class Service:
                 raise ValueError('Confirm the displayed plan / 请确认安装计划')
             if command != 'start' and record['status'] == 'ready':
                 raise ValueError('This plan has not been confirmed / 此计划尚未确认')
-            if (command != 'start' and record['choices']['method'] == 'uninstall' and
+            if (command != 'start' and record['choices']['method'] in ('uninstall','expand') and
                     p.get('serial') and p['serial'] != record['device']['serial']):
-                self.rebind_uninstall(record, p['serial'], current)
+                self.rebind_maintenance(record, p['serial'], current)
             self.store.save(record)
             context = Context(self.store, record, self.emit)
             context.private.append(p.get('password', ''))
@@ -426,7 +462,7 @@ class Service:
                             if (before.st_size,before.st_mtime_ns)!=(after.st_size,after.st_mtime_ns):
                                 raise ValueError('Backup changed during export; retry at a safe pause / 备份在导出期间变化，请安全暂停后重试')
                 current=self.store.load(record['id'])
-                keys=('device','package','choices','plan','effects','legacy','legacy_phase','nv_recovery','online_shrink','uninstall')
+                keys=('device','package','choices','plan','effects','legacy','legacy_phase','nv_recovery','online_shrink','uninstall','expand','expand_reset_offer')
                 if current.get('unsafe') or any(current.get(key)!=record.get(key) for key in keys):
                     raise ValueError('Installation advanced during export; retry at a safe pause / 安装在导出期间推进，请安全暂停后重试')
             except BaseException:
@@ -464,14 +500,16 @@ class Service:
             raise ValueError('Installation record is missing or outside its workspace / 安装记录不存在或不在本机记录目录中')
         return directory
 
-    def rebind_uninstall(self, record, serial, package):
+    def rebind_maintenance(self, record, serial, package):
         """Explicit paused-resume transport selection, bound to the original hardware."""
         if not isinstance(serial,str) or not serial or len(serial)>512 or '\0' in serial:
             raise ValueError('Select a connected device / 请选择已连接的设备')
         with ExitStack() as locks:
             for identity in sorted({serial,record['device']['cid']}):
                 locks.enter_context(DeviceLock(self.store.base,identity))
-            actual = self.adapter(package).probe(serial,'uninstall')
+            target=self.adapter(package)
+            actual = (target.probe(serial,'expand',gpt_scan=False) if record['choices']['method']=='expand' else
+                      target.probe(serial,'uninstall'))
             if actual.get('readiness') != 'ready':
                 raise ValueError('Finish Android setup, debugging and root before selecting the new connection / 请先完成 Android 初始化、调试授权和 root，再选择新连接')
             if any(actual.get(key) != record['device'].get(key) for key in ('cid','profile','slot')):
@@ -531,6 +569,8 @@ class Service:
                     locks.enter_context(DeviceLock(self.store.base, identity))
                 if r['choices']['method'] == 'uninstall':
                     return Uninstaller(self, context, adapter).run()
+                if r['choices']['method'] == 'expand':
+                    return expand_space.Expander(self,context,adapter).run()
                 # Verification is required by every install/boot path. Check
                 # local native dependencies before shrink, backups or misc.
                 load_ssh()
@@ -569,7 +609,7 @@ class Service:
                     result = adapter.execute()
                 self.openwrt_wait_stage(context)
                 self.wait_openwrt(context, adapter)
-        except (NVConfirmationRequired, OnlineDecision):
+        except (NVConfirmationRequired, OnlineDecision, expand_space.FormatRequired):
             # The decision and progress have already been saved automatically.
             return
         except Cancelled:
@@ -585,7 +625,7 @@ class Service:
                                    'host_runtime_unavailable' if isinstance(error, HostRuntimeError) else
                                    'capacity_mismatch' if isinstance(error, FilesystemCapacityError) else 'operation_failed'),
                           'message': message,
-                          'retryable': not r['unsafe'] or bool(r.get('legacy')) or r.get('online_shrink',{}).get('state') in ('prepared','started','gpt-committed') or r['choices']['method'] == 'uninstall'}
+                          'retryable': not r['unsafe'] or bool(r.get('legacy')) or r.get('online_shrink',{}).get('state') in ('prepared','started','gpt-committed') or r['choices']['method'] in ('uninstall','expand')}
             context.stage(r['stage'], 'failed')
 
     def wait_android(self, context, adapter):

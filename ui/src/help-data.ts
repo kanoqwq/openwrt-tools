@@ -19,6 +19,7 @@ export function helpTopics(language: Language) {
     {id:'reset', title:zh ? 'Android 重置后续装' : 'Resume after Android reset', markdown:sections.get(zh ? '加密 userdata：重置后自动续装' : 'Encrypted userdata and reset')},
     {id:'update', title:zh ? '更新与自动重启' : 'Updates and automatic restart', markdown:sections.get(zh ? '更新与自动重启' : 'Updates and automatic restart')},
     {id:'uninstall', title:zh ? '卸载并归还空间' : 'Uninstall and return space', markdown:sections.get(zh ? '卸载内置 OpenWrt 并归还空间' : 'Remove internal OpenWrt and return space')},
+    {id:'expand', title:zh ? '回收未分配空间' : 'Reclaim unallocated space', markdown:sections.get(zh ? '检查空闲空间并扩容 Android' : 'Inspect free space and expand Android')},
     {id:'recovery', title:zh ? '安装记录与失败恢复' : 'Records and recovery', markdown:sections.get(zh ? '暂停、关闭与失败恢复' : 'Recovery and results')},
     {id:'faq', title:zh ? '连接与常见问题' : 'Connection and troubleshooting', markdown:sections.get(zh ? '连接与常见问题' : 'Connection and troubleshooting')},
   ].map(topic => ({...topic, markdown:topic.markdown || ''}));
