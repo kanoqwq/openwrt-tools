@@ -111,6 +111,11 @@ def main():
         page.get_by_role('heading',name='请完成 Android 初始设置',exact=True).first.wait_for()
         settle(page);layout(page)
         page.screenshot(path=str(out/'wait-setup-light-zh.png'),full_page=True)
+        # A device without su at all is told to install and patch Magisk and to allow su for adb, not just "restore Magisk"
+        page.evaluate("window.__emitFixture({stage:'magisk',status:'waiting_user'})")
+        page.get_by_role('heading',name='请安装或恢复 Magisk',exact=True).first.wait_for()
+        guidance=page.locator('.waiting-guidance').inner_text()
+        assert '选择并修补一个文件' in guidance and '应用和 ADB' in guidance and 'Shell' in guidance,guidance
         page.get_by_label('主题').select_option('dark')
         page.get_by_label('语言').select_option('en')
         page.wait_for_timeout(300)
@@ -120,6 +125,10 @@ def main():
         assert page.locator('[data-sonner-toast][data-type=info]').filter(has_text='Allow the root request').count()==1
         for _ in range(8):page.evaluate("window.__emitFixture({stage:'root_permission',status:'waiting_user'})")
         assert page.locator('[data-sonner-toast][data-type=info]').filter(has_text='Allow the root request').count()==1
+        # A su that adb's shell has not been granted gets the grant instructions, not the patching ones
+        guidance=page.locator('.waiting-guidance').inner_text()
+        assert 'tap Grant' in guidance and 'allow Shell' in guidance and 'Apps and ADB' in guidance,guidance
+        assert 'Select and Patch a File' not in guidance,guidance
         page.screenshot(path=str(out/'wait-root-dark-en.png'),full_page=True)
         page.evaluate("window.__emitFixture({stage:'complete',status:'completed',result:{filesystem_bytes:10737418240,url:'http://192.168.9.1',backup_directory:'fixture'}})")
         page.get_by_role('heading',name='OpenWrt installed and verified').wait_for()

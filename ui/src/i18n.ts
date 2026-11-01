@@ -73,6 +73,8 @@ export const strings = {
     running:'正在执行', waiting_user:'等待用户操作', waiting_device:'等待设备重连', failed:'操作失败', completed:'已完成', cancelled:'已暂停', readyStatus:'等待确认',
     stages:{online_shrink:'在线缩容并校验 GPT（请勿断电）',online_fallback:'等待选择缩容后备方案',uninstall_prepare:'准备离线卸载',uninstall_restore_boot:'恢复 Android 启动',uninstall_offline:'等待离线卸载及 Android 返回',verify_android:'验证 Android 恢复容量',firmware_extract:'提取本机固件',firmware_convert:'转换本机音频与蓝牙固件',plan:'安装计划已就绪',prepare:'准备安装',backup:'备份 GPT、misc 与启动链',android_boot:'等待 Android 开机',android_setup:'请完成 Android 初始设置',usb_debugging:'请启用 USB 调试',debug_authorization:'请在设备上允许调试',magisk:'请安装或恢复 Magisk',root_permission:'请允许 root 请求',root_ready:'root 已就绪，继续安装',recheck:'复核分区与事务状态',transfer_install:'传输及安装系统',verify_capacity:'扩容与最终容量校验',openwrt_boot:'等待启动 OpenWrt',complete:'安装完成'},
     waitingAndroid:'保持设备供电。进入 Android 后完成初始设置、开启开发者选项及 USB 调试，并允许当前控制端调试。若 root 仍可用，会直接继续；否则恢复 Magisk 并允许 root 请求。这里没有等待时限。',
+    rootMagiskHelp:'设备上找不到可用的 su，说明尚未获得 root。请在设备上操作：① 打开 Magisk，选择“安装 (Install)”→“选择并修补一个文件 (Select and Patch a File)”，修补本机的启动镜像，按本机型号的方法刷入修补后的镜像并重启；② 重启后打开 Magisk，确认已安装，在“超级用户 (Superuser)”中允许“Shell”，并在设置中将“超级用户权限 (Superuser access)”设为“应用和 ADB (Apps and ADB)”。root 就绪后安装器会自动继续，没有等待时限。',
+    rootPermissionHelp:'设备上有 su，但 ADB 的 Shell 还没有获得 root 授权。请保持设备亮屏并解锁，在 Magisk 弹出的超级用户请求中点击“授权 (Grant)”（约 10 秒无人响应的请求会被拒绝，安装器会继续重试）；没有弹窗时，打开 Magisk →“超级用户 (Superuser)”，允许“Shell”，并在设置中将“超级用户权限 (Superuser access)”设为“应用和 ADB (Apps and ADB)”。授权后安装器会自动继续，没有等待时限。',
     rebootNow:'准备进入 OpenWrt', rebootManual:'安装写入已完成。点击“重启设备”通过 ADB 进入 OpenWrt；ADB 不可用时也可手动重启。已开始重启或已进入 OpenWrt 时，无需重复重启。',
     rebootDevice:'重启设备', rebootSending:'正在请求重启…', rebootQueued:'重启请求已提交，正在核对设备',
     rebootAutomatic:'已发送自动重启请求，请等待设备开机。若设备仍停留在原系统且未开始重启，请使用设备的正常重启功能。',
@@ -160,6 +162,8 @@ export const strings = {
     running:'Running',waiting_user:'Waiting for you',waiting_device:'Waiting for device',failed:'Failed',completed:'Completed',cancelled:'Paused',readyStatus:'Awaiting confirmation',
     stages:{online_shrink:'Resizing online and verifying GPT — keep power connected',online_fallback:'Waiting for resize fallback choice',uninstall_prepare:'Preparing offline removal',uninstall_restore_boot:'Restoring Android boot',uninstall_offline:'Waiting for offline removal and Android',verify_android:'Verifying restored Android capacity',firmware_extract:'Extracting this device’s firmware',firmware_convert:'Converting device audio and Bluetooth firmware',plan:'Installation plan ready',prepare:'Preparing installation',backup:'Backing up GPT, misc and boot chain',android_boot:'Waiting for Android to boot',android_setup:'Complete Android initial setup',usb_debugging:'Enable USB debugging',debug_authorization:'Allow debugging on the device',magisk:'Install or restore Magisk',root_permission:'Allow the root request',root_ready:'Root is ready; continuing installation',recheck:'Rechecking partitions and transaction',transfer_install:'Transferring and installing the system',verify_capacity:'Growing and verifying actual capacity',openwrt_boot:'Waiting for OpenWrt to start',complete:'Installation complete'},
     waitingAndroid:'Keep power connected. Complete Android setup, enable developer options and USB debugging, then authorize this control device. Existing working root is accepted immediately; otherwise restore Magisk and grant root. There is no waiting deadline.',
+    rootMagiskHelp:'No usable su was found, so this device is not rooted yet. On the device: 1) open Magisk, choose Install → Select and Patch a File, patch this device’s boot image, flash the patched image the way this model requires and reboot; 2) after the reboot open Magisk, confirm it is installed, allow Shell under Superuser, and set Settings → Superuser access to Apps and ADB. The installer continues by itself once root is ready; there is no waiting deadline.',
+    rootPermissionHelp:'su exists, but the ADB shell has not been granted root. Keep the device screen on and unlocked and tap Grant on the Magisk Superuser request (a request nobody answers is refused after about 10 seconds; the installer keeps retrying). If no prompt appears, open Magisk → Superuser, allow Shell, and set Settings → Superuser access to Apps and ADB. The installer continues by itself once granted; there is no waiting deadline.',
     rebootNow:'Ready to start OpenWrt', rebootManual:'Installation writes are complete. Click “Restart device” to enter OpenWrt over ADB, or restart manually if ADB is unavailable. If it is already restarting or running OpenWrt, do not restart it again.',
     rebootDevice:'Restart device', rebootSending:'Requesting restart…', rebootQueued:'Restart requested; checking the device',
     rebootAutomatic:'An automatic restart was requested. Wait for the device to boot. If it stays in the previous system without restarting, use its normal restart control.',
@@ -176,3 +180,9 @@ export const strings = {
   }
 };
 export type Language = keyof typeof strings;
+// The two waiting stages where root is the missing piece get their own instructions: `magisk` (adb finds no su at
+// all, so the device is not rooted) and `root_permission` (there is a su, but adb's shell has not been granted it).
+// Every other waiting stage keeps the shared waitingAndroid text.
+export function rootHelp(t: (typeof strings)[Language], stage?: string): string | undefined {
+  return stage === 'magisk' ? t.rootMagiskHelp : stage === 'root_permission' ? t.rootPermissionHelp : undefined;
+}

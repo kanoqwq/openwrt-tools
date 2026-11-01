@@ -154,9 +154,13 @@ FBE＋metadata 加密的 F2FS 不再仅因加密就要求清空：核实完整�
 
 解锁 Android，允许“USB 调试”请求。没有弹窗时，确认 USB 调试已开启，再重新插拔数据线并刷新。设备正在重启时先等待开机；已有安装任务时保留原记录。
 
+#### 显示“请安装或恢复 Magisk”？
+
+安装器在设备上找不到可用的 su，说明设备尚未 root。在设备上打开 Magisk，选择“安装 (Install)”→“选择并修补一个文件 (Select and Patch a File)”，修补本机的启动镜像，按本机型号的方法刷入修补后的镜像并重启。重启后在 Magisk 的“超级用户 (Superuser)”中允许“Shell”，并在设置中将“超级用户权限 (Superuser access)”设为“应用和 ADB (Apps and ADB)”。root 就绪后安装器会自动继续，不需要重新开始。
+
 #### 已经安装 Magisk，为什么还在等待 root？
 
-打开 Magisk，确认 root 环境正常，并允许 Shell 的 root 请求。只有 Magisk 应用、没有可用 root 时，需要恢复 root 环境；重置后也可能需要重新授权。
+显示“请允许 root 请求”时，设备上有 su，但 ADB 的 Shell 还没有获得授权。保持设备亮屏并解锁，在 Magisk 弹出的超级用户请求中点击“授权 (Grant)”；约 10 秒无人响应的请求会被拒绝，安装器会继续重试。没有弹窗时，打开 Magisk →“超级用户 (Superuser)”，允许“Shell”，并在设置中将“超级用户权限 (Superuser access)”设为“应用和 ADB (Apps and ADB)”。只有 Magisk 应用、没有可用 root 时，需要恢复 root 环境；重置后也可能需要重新授权。
 
 #### 安装记录丢失了怎么办？
 
@@ -315,9 +319,13 @@ To disconnect one wireless device, select it in the list and choose Disconnect s
 
 Unlock Android and allow the USB debugging request. If no prompt appears, confirm debugging is enabled, reconnect the cable and refresh. Wait for startup if the device is restarting. Keep the original record for an installation already in progress.
 
+#### The installer says “Install or restore Magisk”?
+
+No usable su was found on the device, so it is not rooted yet. On the device, open Magisk, choose Install → Select and Patch a File, patch this device’s boot image, flash the patched image the way this model requires and reboot. After the reboot, allow Shell under Superuser in Magisk and set Settings → Superuser access to Apps and ADB. The installer continues by itself once root is ready; there is no need to start over.
+
 #### Magisk is installed, but root is still pending?
 
-Open Magisk, check that root is working and allow the Shell root request. Having only the Magisk app installed is not enough. Restore root if it is missing; a reset may also require granting permission again.
+When the installer says “Allow the root request”, su exists but the ADB shell has not been granted it. Keep the device screen on and unlocked and tap Grant on the Magisk Superuser request; a request nobody answers is refused after about 10 seconds, and the installer keeps retrying. If no prompt appears, open Magisk → Superuser, allow Shell, and set Settings → Superuser access to Apps and ADB. Having only the Magisk app installed is not enough. Restore root if it is missing; a reset may also require granting permission again.
 
 #### What if my installation record is missing?
 
