@@ -175,13 +175,20 @@ def inspect_installation(adapter, device, root, *, boot_backup=None, recovery_st
     try:
         adb = adapter.adb
         storage = device['storage']; disk = storage_io.disk_node(storage['NODE'])
-        node = storage_io.part_node(disk,root['n']); capacity = (root['end']-root['start']+1)*512
-        if (not re.fullmatch(r'(?:mmcblk\d+p|sd[a-z]+)[1-9][0-9]*',node) or storage.get('ROOT') != node or
+        from . import mu300_region
+        region = root.get('layout') == mu300_region.LAYOUT
+        node = disk if region else storage_io.part_node(disk,root['n'])
+        capacity = (root['end']-root['start']+1)*512
+        if region:
+            if adapter.kind != 'mu300' or storage.get('ROOT_LAYOUT') != mu300_region.LAYOUT:
+                raise ValueError('Raw root is not an upstream MU300 layout')
+            mu300_region.geometry(adapter.read_gpt(storage),root['start'],capacity//512)
+        if (storage.get('ROOT') != node or
                 storage.get('ROOT_START') != root['start'] or storage.get('ROOT_SIZE')*512 != capacity):
             raise ValueError('Kernel OpenWrt node differs from verified GPT; reboot Android / 内核分区节点与 GPT 不符，请重启 Android')
         # Android must not have the target mounted or mapped. Only metadata in
         # this partition is read; neither userdata nor an unlisted gap is scanned.
-        idle = adb.shell('set -e; n='+node+'; h=$(ls -A /sys/class/block/$n/holders); '
+        idle = adb.shell(mu300_region.idle_script(disk) if region else 'set -e; n='+node+'; h=$(ls -A /sys/class/block/$n/holders); '
                          'd=$(cat /sys/class/block/$n/dev); '
                          'm=$(awk -v n="$d" \'$3==n {print "BUSY"}\' /proc/self/mountinfo); '
                          'if [ -z "$h$m" ]; then echo IDLE; else echo BUSY; fi',root=True)
@@ -216,10 +223,14 @@ def inspect_installation(adapter, device, root, *, boot_backup=None, recovery_st
                     if stat.S_IFMT(mode) != stat.S_IFREG or len(content) > 256 << 10:
                         raise ValueError('Unsupported installed boot evidence')
                     files[name] = content
+        upstream = False
         if adapter.kind == 'e5':
             if b'/etc/e5/part-root' not in files.get('init',b''):
                 raise ValueError('Installed E5 boot does not recognize internal partitions / 已安装的 E5 启动镜像不支持内置分区')
             paths = {'etc/e5/part-root':None,'etc/openwrt_release':None}
+        elif b'is_mu300root()' in files.get('init',b'') and b'find_root_offset()' in files.get('init',b''):
+            upstream = True
+            paths = {'.mu300/boot-os': None}
         else:
             # install-part boots keep this mode even after a successful install;
             # completed root markers below distinguish them from preparation.
@@ -229,12 +240,24 @@ def inspect_installation(adapter, device, root, *, boot_backup=None, recovery_st
                 raise ValueError('Installed MU300 boot has no completed internal-partition route / 已安装的 MU300 启动镜像未确认完成内置分区安装')
             paths = {'openwrt/etc/mu300/desktop-mode':b'part', '.mu300/boot-os':None,'openwrt/etc/openwrt_release':None}
         def read(offset,length):
-            begin = offset//512; end = (offset+length+511)//512
+            base = root['start']*512 if region else 0
+            begin = (base+offset)//512; end = (base+offset+length+511)//512
             raw = adb.read(f'dd if=/dev/block/{node} bs=512 skip={begin} count={end-begin} 2>/dev/null')
             if len(raw) != (end-begin)*512:
                 raise ValueError('Incomplete OpenWrt partition read')
             return raw[offset%512:offset%512+length]
         fs = Ext4Evidence(read,capacity,pending_journal=recovery_store is not None)
+        if region and not upstream:
+            raise ValueError('Raw region boot does not implement the upstream layout')
+        if region and fs.filesystem_limit != capacity:
+            raise ValueError('Raw MU300 extent does not match its filesystem size / MU300 裸区域范围与文件系统容量不符')
+        if upstream:
+            if not region and mu300_region.headers(adapter,device,adapter.read_gpt(storage)):
+                raise ValueError('Both an upstream raw root and a GPT root exist / 同时存在上游裸区域系统和 GPT 系统，不能自动选择卸载目标')
+            if fs.super[120:136].rstrip(b'\0') != b'mu300root':
+                raise ValueError('Upstream ext4 label is not exactly mu300root')
+            os = fs.file('.mu300/boot-os').strip().decode('ascii')
+            paths = {path:None for path in mu300_region.marker_paths({'upstream_os':os})}
         for path, expected in paths.items():
             value = fs.file(path).strip()
             if expected is not None and value != expected:
@@ -243,7 +266,7 @@ def inspect_installation(adapter, device, root, *, boot_backup=None, recovery_st
                 raise ValueError('OpenWrt distribution identity is missing / 缺少 OpenWrt 系统身份信息')
             if path.endswith('part-root') and value not in (('e5root /dev/'+disk).encode(),('e5root /dev/block/'+disk).encode()):
                 raise ValueError('E5 partition marker names a different disk / E5 安装标记指向另一块磁盘')
-            if path == '.mu300/boot-os' and value not in (b'android',b'openwrt'):
+            if path == '.mu300/boot-os' and value not in ((b'openwrt',b'openwrt-luci') if upstream else (b'android',b'openwrt')):
                 raise ValueError('MU300 boot selector is unsupported / MU300 启动选择标记不受支持')
             paths[path] = hashlib.sha256(value).hexdigest()
         if fs.needs_recovery:
@@ -254,7 +277,8 @@ def inspect_installation(adapter, device, root, *, boot_backup=None, recovery_st
                 for identity in sorted({device['serial'],device['cid']}):
                     locks.enter_context(DeviceLock(recovery_store.base,identity))
                 layout = adapter.read_gpt(storage)
-                matching = [p for p in layout['parts'] if p['n'] == root['n']]
+                matching = ([mu300_region.geometry(layout,root['start'],capacity//512)] if region else
+                            [p for p in layout['parts'] if p['n'] == root['n']])
                 if len(matching) != 1 or any(matching[0].get(k) != root.get(k) for k in ('start','end','name')):
                     raise ValueError('Partition geometry changed before journal recovery / 日志回放前分区边界发生变化')
                 current = read(1024,1024)
@@ -273,6 +297,8 @@ def inspect_installation(adapter, device, root, *, boot_backup=None, recovery_st
                            '[ -x /system/bin/e2fsck ]; '
                            'rc=0; /system/bin/e2fsck -p -E journal_only /dev/block/$n </dev/null || rc=$?; '
                            '[ "$rc" = 0 ] || [ "$rc" = 1 ]; sync')
+                if region:
+                    script = mu300_region.journal_script(disk,root['start'],capacity)
                 try:
                     adb.shell(script,root=True,timeout=120)
                 except (ConnectionError,OSError,TimeoutError) as error:
@@ -282,9 +308,14 @@ def inspect_installation(adapter, device, root, *, boot_backup=None, recovery_st
                 if after[104:120] != fs.super[104:120]:
                     raise ValueError('Filesystem identity changed during journal recovery / 日志回放期间文件系统身份变化')
                 return inspect_installation(adapter,device,root,boot_backup=boot_backup)
-        return {'version':1,'boot_header_sha256':boot['header_sha256'],
+        proof = {'version':1,'boot_header_sha256':boot['header_sha256'],
                 'ramdisk_sha256':hashlib.sha256(ram[:size]).hexdigest(),
                 'superblock_sha256':hashlib.sha256(fs.super).hexdigest(),'markers':paths}
+        if upstream:
+            proof.update(upstream_os=os)
+        if region:
+            proof['region_header_sha256'] = hashlib.sha256(read(0,4096)).hexdigest()
+        return proof
     except (ValueError,KeyError,TypeError,struct.error) as error:
         raise RecoveryRequired('Cannot verify the installed OpenWrt partition without original backups / '
                                '没有原备份，且无法核实设备上的 OpenWrt 安装；已停止: '+str(error)) from error

@@ -49,6 +49,13 @@ def inspect_space(adapter,device,info=None):
     # The allocation scanner checks MiB-aligned starts. Also inspect each
     # actual raw gap start: expansion can consume the preceding partial MiB.
     info=dict(info);info['gap_signatures']=list(info.get('gap_signatures',[]))
+    if adapter.kind == 'mu300':
+        from .mu300_region import headers
+        # Space recovery must not swallow an upstream filesystem at the next
+        # 2 MiB boundary after an already aligned userdata end. Removal is a
+        # separate, explicitly confirmed operation; installation is unchanged.
+        for start, size in headers(adapter,device,info):
+            info['gap_signatures'].append({'offset':start,'kind':'ext4'})
     disk='/dev/block/'+storage.disk_node(device['storage']['NODE'])
     for row in describe(info,device)['gaps']:
         at=row['start']

@@ -431,7 +431,7 @@ class BootRequest(unittest.TestCase):
 @unittest.skipUnless(shutil.which('busybox'),'requires Linux BusyBox')
 class OfflineGpt(unittest.TestCase):
     def test_full_worker_reset_gap_resume_and_both_android_slots_on_regular_files(self):
-        for slot,wipe,finished,grow in (('a',True,False,''),('b',True,False,''),('a',False,False,''),('b',False,False,''),('a',True,True,''),('a',False,False,'ok'),('b',False,False,'ok'),('a',False,False,'check-failed'),('a',False,False,'reread-failed'),('b',False,False,'stale-node'),('a',False,False,'android'),('b',False,False,'android'),('a',False,False,'android-bcb-failed')):
+        for slot,wipe,finished,grow in (('a',True,False,''),('b',True,False,''),('a',False,False,''),('b',False,False,''),('a',True,True,''),('a',False,False,'ok'),('b',False,False,'ok'),('a',False,False,'check-failed'),('a',False,False,'reread-failed'),('b',False,False,'stale-node'),('a',False,False,'android'),('b',False,False,'android'),('a',False,False,'android-bcb-failed'),('a',False,False,'region'),('b',False,True,'region'),('b',False,False,'region-bad-header'),('a',True,False,'region-reset'),('b',False,False,'region-cleared'),('a',False,False,'region-bad-bcb')):
             with self.subTest(slot=slot,wipe=wipe,finished=finished,grow=grow),tempfile.TemporaryDirectory() as directory:
                 folder=Path(directory)
                 for name in ('run','dev','sys/class/block/mmcblk0/device','proc','work'):
@@ -439,6 +439,19 @@ class OfflineGpt(unittest.TestCase):
                 (folder/'proc/mountinfo').write_text('')
                 original,before=layouts(gap=not wipe and not grow)
                 after,*_=restored_layout(original,before,SECTORS,'e5root')
+                raw_region=grow.startswith('region')
+                bad_header=grow=='region-bad-header'
+                raw_reset=grow=='region-reset'
+                raw_cleared=grow=='region-cleared'
+                bad_bcb=grow=='region-bad-bcb'
+                root_start=29*GIB//512+(4096 if raw_region else 0)
+                target_sectors=32*GIB//512+(4096 if raw_region else 0)
+                if raw_region:
+                    from backend.mu300_region import layout
+                    table=bytearray(before[0][1024:]);table[4*128:5*128]=bytes(128)
+                    before=copies(table)
+                    after,*_=layout(before,SECTORS,root_start,4*GIB//512)
+                    grow='' if raw_reset else 'android'
                 for name,data in zip(('before-first','before-last','after-first','after-last'),(*before,*after)):
                     (folder/'work'/name).write_bytes(data)
                 with (folder/'dev/mmcblk0').open('wb') as stream:
@@ -446,7 +459,7 @@ class OfflineGpt(unittest.TestCase):
                     stream.seek((SECTORS-33)*512);stream.write(after[1] if finished else before[1])
                     stream.seek(GIB);stream.write(b'KEEP ANDROID DATA')
                     stream.seek(400000*512);stream.write(b'KEEP NV DATA')
-                    stream.seek(29*GIB);stream.write(b'OPENWRT SIGNATURE')
+                    stream.seek(root_start*512);stream.write(bytes(4096) if raw_region and (finished or raw_cleared) else b'OPENWRT SIGNATURE')
                 for node,name in (('mmcblk0p4','userdata'),('mmcblk0p5','e5root'),('mmcblk0p3','misc'),
                                   ('mmcblk0p1','boot_a'),('mmcblk0p2','boot_b')):
                     path=folder/'sys/class/block'/node
@@ -455,6 +468,8 @@ class OfflineGpt(unittest.TestCase):
                     (path/'dev').write_text('179:'+node.split('p')[-1])
                     (path/'size').write_text('8')
                     (path/'start').write_text(str(GIB//512))
+                (folder/'sys/class/block/mmcblk0/holders').mkdir()
+                (folder/'sys/class/block/mmcblk0/dev').write_text('179:0')
                 (folder/'sys/class/block/mmcblk0/device/cid').write_text(IDENTITY)
                 (folder/'sys/class/block/mmcblk0/device/type').write_text('MMC')
                 from backend.storage import library
@@ -467,7 +482,7 @@ class OfflineGpt(unittest.TestCase):
                 (folder/'dev'/android_node).write_bytes(android);(folder/'dev'/linux_node).write_bytes(b'L'*4096)
                 (folder/'dev/zero').write_bytes(bytes(4096))
                 misc=bytearray(4096)
-                if finished:misc[128:143]=b'KEEP AFTER WIPE'
+                if finished and wipe:misc[128:143]=b'KEEP AFTER WIPE'
                 misc[2048:2080]=android_bc(slot)
                 (folder/'dev/mmcblk0p3').write_bytes(misc)
                 bcb=bytearray(2048);bcb[:13]=b'boot-recovery';message=b'recovery\n--wipe_data\n'
@@ -476,11 +491,16 @@ class OfflineGpt(unittest.TestCase):
                 (folder/'work/before-bcb').write_bytes(bytes(2048))
                 (folder/'work/android-bc').write_bytes(android_bc(slot))
                 request=[IDENTITY,'mmcblk0','mmcblk0p4','mmcblk0p5','mmcblk0p3',android_node,linux_node,
-                         SECTORS,34,SECTORS-33,29*GIB//512,4*GIB//512,int(wipe),4096,boot_sha]
+                         SECTORS,34,SECTORS-33,root_start,4*GIB//512,int(wipe),4096,boot_sha]
                 if grow:
-                    request+=[('grow-android-f2fs' if grow.startswith('android') else 'grow-ext4'),GIB//512,32*GIB//512,28*GIB,'55'*16]
+                    request+=[('grow-android-f2fs' if grow.startswith('android') else 'grow-ext4'),GIB//512,target_sectors,28*GIB,'55'*16]
                     (folder/'dev/mmcblk0p4').write_bytes(bytes(1024)+superblock(28*GIB))
-                if grow=='android-bcb-failed':
+                if raw_region:
+                    request[3]='mmcblk0'
+                    if raw_reset:request+=['reset','','','','']
+                    expected_header=b'OPENWRT SIGNATURE'.ljust(4096,b'\0')
+                    request+=['region',('0'*64 if bad_header else hashlib.sha256(expected_header).hexdigest())]
+                if bad_bcb or grow=='android-bcb-failed':
                     (folder/'work/before-bcb').write_bytes(b'UNEXPECTED RECOVERY'.ljust(2048,b'\0'))
                 (folder/'work/request').write_text(':'.join(map(str,request))+'\n')
                 sums=''.join(hashlib.sha256(path.read_bytes()).hexdigest()+'  '+path.name+'\n'
@@ -501,17 +521,20 @@ class OfflineGpt(unittest.TestCase):
                     if grow.startswith('android'):
                         prefix+='fs_tool() { echo FORBIDDEN_RAW_CHECK; return 99; }\nfs_grow() { echo FORBIDDEN_RAW_GROW; return 99; }\n'
                     prefix+='kernel_node_matches() { '+('return 1' if grow=='stale-node' else ':')+'; }\n'
-                    prefix+='blockdev() { '+('return 16' if grow=='reread-failed' else '[ "$1" = --rereadpt ] && echo '+str(32*GIB//512)+' > '+str(folder/'sys/class/block/mmcblk0p4/size'))+'; }\n'
+                    prefix+='blockdev() { '+('return 16' if grow=='reread-failed' else '[ "$1" = --rereadpt ] && echo '+str(target_sectors)+' > '+str(folder/'sys/class/block/mmcblk0p4/size'))+'; }\n'
                     worker=worker.replace('# BEGIN DEVICE WORKER',prefix+'\n# BEGIN DEVICE WORKER',1)
                 result=subprocess.run(['busybox','ash','-c',prefix+worker],capture_output=True,text=True,timeout=10)
                 debug=list((folder/'run').rglob('debug.log'))
                 detail=debug[0].read_text() if debug else result.stderr
-                if grow in ('check-failed','reread-failed','stale-node','android-bcb-failed'):
+                if bad_header or bad_bcb or grow in ('check-failed','reread-failed','stale-node','android-bcb-failed'):
                     self.assertNotEqual(result.returncode,0,detail)
                     self.assertFalse((folder/'rebooted').exists())
-                    with (folder/'dev/mmcblk0').open('rb') as stream:self.assertEqual(stream.read(34*512),before[0] if grow in ('check-failed','android-bcb-failed') else after[0])
+                    with (folder/'dev/mmcblk0').open('rb') as stream:self.assertEqual(stream.read(34*512),before[0] if bad_header or bad_bcb or grow in ('check-failed','android-bcb-failed') else after[0])
                     self.assertEqual((folder/'dev/mmcblk0p3').read_bytes(),bytes(misc))
                     self.assertNotIn('PRESERVING_GROW',detail)
+                    if raw_region:
+                        with (folder/'dev/mmcblk0').open('rb') as stream:
+                            stream.seek(root_start*512);self.assertEqual(stream.read(17),b'OPENWRT SIGNATURE')
                     continue
                 self.assertNotIn('FORBIDDEN_RAW_',detail)
                 self.assertEqual(result.returncode,0,detail)
@@ -523,6 +546,9 @@ class OfflineGpt(unittest.TestCase):
                     self.assertEqual(stream.read(),after[1]);stream.seek(GIB)
                     self.assertEqual(stream.read(17),b'KEEP ANDROID DATA');stream.seek(400000*512)
                     self.assertEqual(stream.read(12),b'KEEP NV DATA')
+                if raw_region:
+                    with (folder/'dev/mmcblk0').open('rb') as stream:
+                        stream.seek(root_start*512);self.assertEqual(stream.read(4096),bytes(4096))
                 resulting=(folder/'dev/mmcblk0p3').read_bytes()
                 self.assertEqual(resulting[:2048],bytes(misc[:2048]) if finished or not wipe else bytes(bcb))
                 self.assertNotIn(IDENTITY,detail)

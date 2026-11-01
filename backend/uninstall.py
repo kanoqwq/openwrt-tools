@@ -24,6 +24,7 @@ from .uninstall_growth import (PreservationUnavailable, eligible, growth_tools, 
                                inspect_android_growth, preservation_eligible)
 from .install_evidence import inspect_installation
 from . import android_growth_boot
+from . import mu300_region
 
 
 def partition(info, name):
@@ -185,8 +186,9 @@ def prepare(adapter, store, device, authorize_reset=None):
     space = adapter.read_gpt(storage)
     current = (space['first'], space['last'])
     name = 'e5root' if adapter.kind == 'e5' else 'mu300root'
+    region = adapter.kind == 'mu300' and storage.get('ROOT_LAYOUT') == mu300_region.LAYOUT
     matches = []
-    for source in store.list():
+    for source in ([] if region else store.list()):
         if (source['choices'].get('method') != 'part' or source['device'].get('cid') != device['cid'] or
                 source['package'].get('adapter') != adapter.kind or source['device'].get('profile') != device['profile']):
             continue
@@ -215,11 +217,14 @@ def prepare(adapter, store, device, authorize_reset=None):
     if matches:
         source, after, data, root, expands = matches[0]
     else:
-        after, data, root, expands = device_layout(current,total,name)
+        if region:
+            after, data, root, expands = mu300_region.layout(current,total,storage['ROOT_START'],storage['ROOT_SIZE'])
+        else:
+            after, data, root, expands = device_layout(current,total,name)
         proof = inspect_installation(adapter,device,root,recovery_store=store)
         source = None
     node = storage_io.disk_node(storage['NODE'])
-    if (storage['ROOT'] != storage_io.part_node(node,root['n']) or storage['START'] != data['start'] or
+    if (storage['ROOT'] != (node if region else storage_io.part_node(node,root['n'])) or storage['START'] != data['start'] or
             storage['SIZE']*512 != device['userdata_bytes']):
         raise RecoveryRequired('Kernel partition nodes differ from GPT; reboot Android / 内核分区节点与 GPT 不符，请重启 Android')
     for bootname in ('boot_a','boot_b','misc'):
@@ -271,13 +276,18 @@ def prepare(adapter, store, device, authorize_reset=None):
             'source_transaction':source['id'] if source else None,
             'layout_source':'original_record' if source else 'device',
             'released_unallocated_bytes':0 if expands else (root['end']-root['start']+1)*512}
-    metadata = {'version':2 if source else 3,'action':action,'reset_authorized':wipe,'total':total,'front':space['front'],'tail':space['tail'],
+    metadata = {'version':4 if region else 2 if source else 3,'action':action,'reset_authorized':wipe,'total':total,'front':space['front'],'tail':space['tail'],
                 'tool_hashes':{name:hashlib.sha256(content).hexdigest() for name,content in tools.items()},
                 'root_start':root['start'],'root_size':root['end']-root['start']+1,
                 'nodes':{p['name']:storage_io.part_node(node,p['n']) for p in space['parts']
                          if p['name'] in ('userdata',name,'misc','boot_a','boot_b')}, 'volume':volume}
     if proof:
         metadata['installation_evidence'] = proof
+    if region:
+        metadata['nodes'][name] = node
+        metadata['root_layout'] = mu300_region.LAYOUT
+        plan['root_layout'] = mu300_region.LAYOUT
+        plan['root_offset_bytes'] = root['start']*512
     files = dict(zip(('before-first','before-last','after-first','after-last'), (*current,*after)))
     return plan, metadata, files
 
@@ -310,7 +320,7 @@ class Uninstaller:
         """Imported journals must prove the same limited edits, not just hashes."""
         required = {'before-first','before-last','after-first','after-last'}
         version = self.meta.get('version')
-        if set(self.files) != required or version not in (1,2,3) or self.r['plan'].get('method') != 'uninstall':
+        if set(self.files) != required or version not in (1,2,3,4) or self.r['plan'].get('method') != 'uninstall':
             raise RecoveryRequired('Incomplete uninstall journal / 卸载记录不完整')
         storage = self.r['device']['storage']
         if (self.r['package'].get('adapter') not in ('e5','mu300') or
@@ -321,11 +331,21 @@ class Uninstaller:
         after = (self.files['after-first'],self.files['after-last'])
         family = self.r['package']['adapter']
         name = 'e5root' if family == 'e5' else 'mu300root'
-        if version == 3:
-            calculated, prior, root, expands = device_layout(before,total,name)
+        if version in (3,4):
+            if version == 4:
+                if family != 'mu300' or self.meta.get('root_layout') != mu300_region.LAYOUT or storage.get('ROOT_LAYOUT') != mu300_region.LAYOUT:
+                    raise RecoveryRequired('Raw region is not a MU300 installation')
+                calculated, prior, root, expands = mu300_region.layout(before,total,self.meta['root_start'],self.meta['root_size'])
+            else:
+                calculated, prior, root, expands = device_layout(before,total,name)
             proof = self.meta.get('installation_evidence',{})
             paths = {'etc/e5/part-root','etc/openwrt_release'} if family == 'e5' else {
                 'openwrt/etc/mu300/desktop-mode','.mu300/boot-os','openwrt/etc/openwrt_release'}
+            if family == 'mu300' and 'upstream_os' in proof:
+                paths = mu300_region.marker_paths(proof)
+            if version == 4 and (not re.fullmatch('[a-f0-9]{64}',proof.get('region_header_sha256','')) or
+                    'upstream_os' not in proof or storage.get('ROOT_START') != root['start'] or storage.get('ROOT_SIZE') != self.meta['root_size']):
+                raise RecoveryRequired('Upstream region evidence differs / 上游区域身份与记录不符')
             hashes = [proof.get(key,'') for key in ('boot_header_sha256','ramdisk_sha256','superblock_sha256')]
             hashes += list(proof.get('markers',{}).values())
             if (self.r['plan'].get('layout_source') != 'device' or self.r['plan'].get('source_transaction') is not None or
@@ -353,7 +373,8 @@ class Uninstaller:
         data = partition(info,'userdata')
         disk = storage_io.disk_node(storage['NODE'])
         expected_nodes = {label:storage_io.part_node(disk,partition(info,label)['n'])
-                          for label in ('userdata',name,'misc','boot_a','boot_b')}
+                          for label in ('userdata','misc','boot_a','boot_b')}
+        expected_nodes[name] = disk if version == 4 else storage_io.part_node(disk,partition(info,name)['n'])
         if (calculated != list(after) or self.meta['total'] != total or self.meta['front'] != info['front'] or
                 self.meta['tail'] != info['tail'] or self.meta['nodes'] != expected_nodes or
                 self.meta['root_start'] != root['start'] or self.meta['root_size'] != root['end']-root['start']+1 or
@@ -366,6 +387,9 @@ class Uninstaller:
                 self.r['plan']['reclaimed_bytes'] != self.r['plan']['android_bytes']-storage['SIZE']*512 or
                 self.r['plan']['openwrt_bytes'] != (root['end']-root['start']+1)*512):
             raise RecoveryRequired('Uninstall plan/snapshot geometry differs / 卸载计划与分区快照范围不符')
+        if version == 4 and (self.r['plan'].get('root_layout') != mu300_region.LAYOUT or
+                            self.r['plan'].get('root_offset_bytes') != root['start']*512):
+            raise RecoveryRequired('Raw-region display/plan differs / 裸区域显示信息与卸载计划不符')
 
     def current(self):
         adb = self.adapter.adb
@@ -392,9 +416,13 @@ class Uninstaller:
     def arm(self, device):
         from .adapter import debug_output
         adb = self.adapter.adb
-        if self.meta['version'] == 3:
+        if self.meta['version'] in (3,4):
             info = gpt.gpt_space(self.files['before-first'],self.files['before-last'],self.meta['total'])
-            root = partition(info,'e5root' if self.adapter.kind == 'e5' else 'mu300root')
+            if self.meta['version'] == 4:
+                info['first'] = self.files['before-first']
+                root = mu300_region.geometry(info,self.meta['root_start'],self.meta['root_size'])
+            else:
+                root = partition(info,'e5root' if self.adapter.kind == 'e5' else 'mu300root')
             original_boot = None
             if self.r.get('uninstall_retry_linux_sha256'):
                 other = 'b' if device['slot'] == '_a' else 'a'
@@ -461,6 +489,8 @@ class Uninstaller:
             volume = self.meta['volume']
             request += [self.meta['action'],device['storage']['START'],self.r['plan']['android_bytes']//512,
                         volume['filesystem_bytes'],volume.get('uuid','0'*32)]
+        if self.meta['version'] == 4:
+            request += ['region',self.meta['installation_evidence']['region_header_sha256']]
         files = {'openwrt-uninstall/'+name:content for name,content in self.files.items()}
         files.update(tools)
         files['openwrt-uninstall/storage.sh'] = storage_io.library(self.adapter.root, self.adapter.kind).encode()

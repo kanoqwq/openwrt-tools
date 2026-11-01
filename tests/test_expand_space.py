@@ -110,7 +110,7 @@ class Geometry(unittest.TestCase):
             raw=bytearray(2048)
             if 'skip='+str(head)+' ' in cmd:raw[1080:1082]=b'\x53\xef'
             return raw
-        adapter=SimpleNamespace(adb=SimpleNamespace(read=Mock(side_effect=read)))
+        adapter=SimpleNamespace(kind='e5',adb=SimpleNamespace(read=Mock(side_effect=read)))
         _,summary=grow.inspect_space(adapter,{'storage':{'DISK_SIZE':fx.SECTORS,'NODE':'sda4'}},info)
         self.assertEqual(summary['recoverable_bytes'],0)
 

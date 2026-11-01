@@ -47,11 +47,19 @@ touch /run/stay
 httpd -p 8089 -h /run/openwrt-uninstall || true
 cd /openwrt-uninstall
 sha256sum -c SHA256SUMS
-IFS=: read -r cid disk_node data_node root_node misc_node android_node linux_node total front tail start root_size wipe boot_bytes boot_sha action data_start data_size fs_before fs_uuid extra < request
+IFS=: read -r cid disk_node data_node root_node misc_node android_node linux_node total front tail start root_size wipe boot_bytes boot_sha action data_start data_size fs_before fs_uuid root_kind root_sha extra < request
 [ -z "$extra" ] && [ "${#cid}" = 32 ] && [ "${#boot_sha}" = 64 ]
 case "$cid$boot_sha" in *[!0-9a-f]*) exit 2 ;; esac
 case "$disk_node" in mmcblk[0-9]*|sd[a-z]*) ;; *) exit 2 ;; esac
+case "$root_kind" in
+    '') [ -z "$root_sha" ] ;;
+    region)
+        [ "$root_node" = "$disk_node" ] && [ "${#root_sha}" = 64 ]
+        case "$root_sha" in *[!0-9a-f]*) exit 2 ;; esac ;;
+    *) exit 2 ;;
+esac
 for node in "$data_node" "$root_node" "$misc_node" "$android_node" "$linux_node"; do
+    [ "$root_kind" != region ] || [ "$node" != "$root_node" ] || continue
     case "$node" in "$disk_node"p[0-9]*|"$disk_node"[0-9]*) ;; *) exit 2 ;; esac
     case "$node" in *[!a-z0-9]*) exit 2 ;; esac
 done
@@ -124,6 +132,12 @@ finished=0
 if cmp -s check-first after-first && cmp -s check-last after-last; then finished=1; fi
 if [ "$finished" = 0 ]; then
     echo '1/3 validating offline removal' > /run/openwrt-uninstall/progress.txt
+    if [ "$root_kind" = region ]; then
+        dd if="$disk" of=region-header bs=4096 skip="$((start/8))" count=1 2>/dev/null
+        header_sha=$(sha256sum region-header | cut -d' ' -f1)
+        zero_sha=$(dd if=/dev/zero bs=4096 count=1 2>/dev/null | sha256sum | cut -d' ' -f1)
+        [ "$header_sha" = "$root_sha" ] || [ "$header_sha" = "$zero_sha" ]
+    fi
     if [ "$wipe" = 1 ]; then
         # Recovery owns formatting and encryption. Arm its request before GPT
         # changes, but never re-arm it once both restored GPT copies exist.
@@ -135,6 +149,14 @@ if [ "$finished" = 0 ]; then
     elif [ "$action" = gap ]; then
         # Only the proven OpenWrt range is invalidated; factory gaps stay gaps.
         dd if=/dev/zero of="$disk" bs=4096 seek="$((start/8))" count=1 conv=notrunc,fsync
+    fi
+    if [ "$root_kind" = region ]; then
+        # No GPT root entry exists. Retire only the proven 4 KiB header after
+        # BCB/preservation checks and before returning its extent to userdata.
+        # A second pass accepts that same zeroed header after interruption.
+        dd if=/dev/zero of="$disk" bs=4096 seek="$((start/8))" count=1 conv=notrunc,fsync
+        dd if="$disk" of=region-header bs=4096 skip="$((start/8))" count=1 2>/dev/null
+        [ "$(sha256sum region-header | cut -d' ' -f1)" = "$zero_sha" ]
     fi
     echo '2/3 restoring the verified partition layout' > /run/openwrt-uninstall/progress.txt
     snapshot_commit

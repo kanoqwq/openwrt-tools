@@ -376,6 +376,13 @@ class Adapter:
         if method != 'boot' and gpt_scan:
             space = self.read_gpt(storage)
             device['gpt'] = {k: v for k, v in space.items() if k not in ('first', 'last')}
+            if method == 'uninstall' and self.kind == 'mu300' and not storage.get('ROOT'):
+                from .mu300_region import discover, LAYOUT
+                region = discover(self, device, space)
+                if region:
+                    storage.update(ROOT=storage_io.disk_node(storage['NODE']), ROOT_LAYOUT=LAYOUT,
+                                   ROOT_START=region['start'], ROOT_SIZE=region['end']-region['start']+1)
+                    device['existing'] = True
             if method == 'expand':
                 from .expand_space import inspect_space
                 _,device['space'] = inspect_space(self,device,space)
