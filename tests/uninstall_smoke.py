@@ -113,7 +113,7 @@ def main(url='http://127.0.0.1:1420'):
             page.locator('.nav-home').click();settle(page)
             assert ('卸载' if zh else 'removal') not in page.locator('.stepper').inner_text()
             page.get_by_role('button',name='继续未完成的安装' if zh else 'Continue an unfinished installation',exact=False).click();settle(page)
-            label='更换卸载设备的连接（可选）' if zh else 'Change removal device connection (optional)'
+            label='更换维护设备的连接（可选）' if zh else 'Change maintenance device connection (optional)'
             page.locator('summary').filter(has_text=label).click()
             page.evaluate("window.__fixture.devices=[{serial:'192.168.0.1:5555',model:'Same device',state:'device',wireless:true}]")
             page.get_by_role('button',name='刷新设备' if zh else 'Refresh devices',exact=True).click();settle(page)
