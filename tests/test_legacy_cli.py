@@ -61,7 +61,7 @@ class LegacyCli(unittest.TestCase):
                     bind(module,root)
                     args=SimpleNamespace(boot_openwrt=True)
                     result=module.install(args,root,{}) if family=='mu300' else module.boot_openwrt(args)
-                    self.assertEqual(result,'boot-result');boot.assert_called_once_with(root,args)
+                    self.assertEqual(result,'boot-result');boot.assert_called_once_with(root.resolve(),args)
                     if family=='mu300':
                         other=SimpleNamespace(boot_openwrt=False)
                         module.install(other,root,{})

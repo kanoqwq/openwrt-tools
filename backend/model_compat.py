@@ -25,7 +25,7 @@ def runtime_warning(expected, actual):
             'expected_board': None, 'actual_model': actual, 'actual_board': None}
 
 
-MU300_MODELS = ('MU300','F50','V50','U30 Air')
+MU300_MODELS = ('MU300','F50','V50','U30 Air','M3 (MU5352)')
 
 
 def mu300_android(model, board, platform='', expected='mu300-family'):
@@ -41,6 +41,11 @@ def mu300_android(model, board, platform='', expected='mu300-family'):
         profile = 'v50'
         expected_board = 'MU3351 / ums9620'
         matched = 'MU3351' in names and 'V50' in names and platform.strip() == 'ums9620'
+    elif 'MU5352' in names:
+        # Tested M3 identity; do not match arbitrary M3 names or another SoC.
+        profile = 'u30air'
+        expected_board = 'MU5352 / MU5352 / ums9620'
+        matched = names == ['MU5352', 'MU5352'] and platform.strip() == 'ums9620'
     elif re.search(r'U30.?Air', model+'\n'+board, re.I):
         profile, matched = 'u30air', True
     elif re.search(r'MU300|F50', model+'\n'+board, re.I):
