@@ -62,7 +62,7 @@ class RebootSelection(unittest.TestCase):
         for fault in ('short-write','readback','fsync'):
             with self.subTest(fault=fault),tempfile.TemporaryDirectory() as d:
                 root,misc,_,_=self.fixture(d,'mu300','b')
-                before=misc.read_bytes();original=Path.open
+                before=misc.read_bytes();original=Path.open;injected=[]
                 class FailingStream:
                     def __init__(self,stream):self.stream=stream;self.reads=0;self.writes=0
                     def __enter__(self):return self
@@ -76,9 +76,14 @@ class RebootSelection(unittest.TestCase):
                         return self.stream.write(data[:8] if fault=='short-write' and self.writes==1 else data)
                 def opened(path,*args,**kwargs):
                     stream=original(path,*args,**kwargs)
-                    return FailingStream(stream) if path==misc and args[:1]==('r+b',) else stream
+                    # The updater canonicalizes Windows 8.3/alias paths.
+                    if path.resolve()==misc.resolve() and args[:1]==('r+b',):
+                        injected.append(path)
+                        return FailingStream(stream)
+                    return stream
                 with patch.object(Path,'open',opened), patch('boot.os.fsync',side_effect=[OSError('sync failed'),None] if fault=='fsync' else None):
                     with self.assertRaises(OSError):arm_next_linux(root,'mu300')
+                self.assertEqual(len(injected),1,'fault injection did not reach the misc stream')
                 self.assertEqual(misc.read_bytes(),before)
 
 

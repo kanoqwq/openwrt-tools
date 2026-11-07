@@ -407,7 +407,8 @@ def linux_slot(root, family):
 
 
 def partition_device(root, name):
-    root=Path(root)
+    # Compare canonical paths on both sides (relative roots, aliases and Windows 8.3 paths).
+    root=Path(root).resolve()
     def device(path):
         resolved = path.resolve()
         if resolved.is_relative_to(root): return resolved
