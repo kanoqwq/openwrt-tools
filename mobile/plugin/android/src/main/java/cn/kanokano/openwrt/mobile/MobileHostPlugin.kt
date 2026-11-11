@@ -1,6 +1,7 @@
 package cn.kanokano.openwrt.mobile
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -11,6 +12,7 @@ import android.os.Build
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.provider.DocumentsContract
+import android.provider.Settings
 import android.webkit.WebView
 import androidx.activity.result.ActivityResult
 import androidx.core.content.ContextCompat
@@ -19,6 +21,8 @@ import app.tauri.annotation.ActivityCallback
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
+import app.tauri.annotation.Permission
+import app.tauri.annotation.PermissionCallback
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
@@ -41,6 +45,8 @@ object MobileRuntime {
     lateinit var directory: File
     private lateinit var deviceNetwork: DeviceNetwork
     fun bindTcpSocket(fd: Int, address: String): Boolean = deviceNetwork.bindSocket(fd, address)
+    fun requireLocalNetwork() = deviceNetwork.requireAccess()
+    fun hostEnvironment(): String = deviceNetwork.environment()
     // Called by the process-owned Python worker even with no WebView listener.
     fun backendTaskChanged(active: Boolean) = TaskProtection.backend(active)
     @Synchronized fun get(activity: Activity): PyObject {
@@ -70,11 +76,12 @@ object MobileRuntime {
     }
 }
 
-@TauriPlugin
+@TauriPlugin(permissions = [Permission(alias = "localNetwork", strings = [LocalNetworkAccess.PERMISSION])])
 class MobileHostPlugin(private val activity: Activity) : Plugin(activity) {
     private val worker = Executors.newSingleThreadExecutor()
     private val exports by lazy { ExportTargets<Uri>(File(activity.filesDir, "openwrt/exports")) }
     private var dialog: Triple<String, String, String>? = null
+    private var networkPrompt = false
     override fun load(webView: WebView) {
         super.load(webView)
         TaskProtection.attach(activity)
@@ -108,6 +115,35 @@ class MobileHostPlugin(private val activity: Activity) : Plugin(activity) {
             }
         }
     }
+    private fun networkMessage(): String = if (activity.getSharedPreferences("openwrt-tools", Context.MODE_PRIVATE).getString("language", "zh") == "en")
+        "Allow local network access (Nearby devices) to connect over wireless ADB or SSH. USB-only operations remain available."
+        else "无线 ADB 和 SSH 需要局域网访问权限（附近的设备）。仅通过 USB 的操作不受影响。"
+    private fun networkDialog(invoke: Invoke, denied: Boolean) {
+        if (networkPrompt) { invoke.reject(networkMessage(), "local_network_permission"); return }
+        networkPrompt = true
+        val en = activity.getSharedPreferences("openwrt-tools", Context.MODE_PRIVATE).getString("language", "zh") == "en"
+        AlertDialog.Builder(activity)
+            .setTitle(if (en) "Local network access" else "局域网访问权限")
+            .setMessage(networkMessage())
+            .setPositiveButton(if (denied) { if (en) "Open settings" else "打开设置" } else { if (en) "Continue" else "继续" }) { _, _ ->
+                if (denied) {
+                    networkPrompt = false
+                    invoke.reject(networkMessage(), "local_network_permission")
+                    activity.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${activity.packageName}")))
+                } else {
+                    try { requestPermissionForAlias("localNetwork", invoke, "networkPermissionResult") }
+                    catch (error: Exception) { networkPrompt = false; invoke.reject(networkMessage(), "local_network_permission", error) }
+                }
+            }
+            .setNegativeButton(if (en) "Cancel" else "取消") { _, _ -> networkPrompt = false; invoke.reject(networkMessage(), "local_network_permission") }
+            .setOnCancelListener { networkPrompt = false; invoke.reject(networkMessage(), "local_network_permission") }
+            .show()
+    }
+    @PermissionCallback fun networkPermissionResult(invoke: Invoke) {
+        networkPrompt = false
+        if (LocalNetworkAccess.granted(activity)) request(invoke)
+        else networkDialog(invoke, true)
+    }
     @Command fun request(invoke: Invoke) {
         val args = invoke.parseArgs(HostRequest::class.java)
         language(args)
@@ -115,8 +151,12 @@ class MobileHostPlugin(private val activity: Activity) : Plugin(activity) {
             var completed = false
             var protection: Long? = null
             try {
-                if (args.command in listOf("start", "resume", "retry", "probe", "probe_update", "plan", "expand_reset", "package", "adb_connect", "export", "import", "delete_record", "ota_analyze", "ota_export", "ota_export_index", "ota_package", "ota_probe", "ota_apply", "ota_status", "ota_reboot", "mobile_index", "mobile_index_plan")) protection = startTask(args.command in listOf("package", "delete_record", "export", "import", "ota_analyze", "ota_export", "ota_export_index", "ota_package", "mobile_index", "mobile_index_plan"))
                 val runtime = MobileRuntime.get(activity)
+                if (!LocalNetworkAccess.granted(activity) && runtime.callAttr("requires_network", args.command, args.parameters).toBoolean()) {
+                    activity.runOnUiThread { networkDialog(invoke, false) }
+                    return@execute
+                }
+                if (args.command in listOf("start", "resume", "retry", "probe", "probe_update", "plan", "expand_reset", "package", "adb_connect", "export", "import", "delete_record", "ota_analyze", "ota_export", "ota_export_index", "ota_package", "ota_probe", "ota_apply", "ota_status", "ota_reboot", "mobile_index", "mobile_index_plan")) protection = startTask(args.command in listOf("package", "delete_record", "export", "import", "ota_analyze", "ota_export", "ota_export_index", "ota_package", "mobile_index", "mobile_index_plan"))
                 val result = org.json.JSONTokener(runtime.callAttr("request", args.command, args.parameters).toString()).nextValue()
                 completed = true
                 if (result is JSONObject) listOf("path", "output").forEach { publishExport(result.optString(it)) }

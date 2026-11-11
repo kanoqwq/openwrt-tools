@@ -14,12 +14,26 @@ from .adb import Registry
 
 
 class Provider:
-    def __init__(self,resources,directory,usb,notify,apk=None,bind_socket=None):
+    def __init__(self,resources,directory,usb,notify,apk=None,bind_socket=None,require_network=None,environment=None):
         self.resources=Path(resources)
         self.directory=Path(directory)
-        self.registry=Registry(usb,Path(directory)/'keys',notify,bind_socket)
+        self.registry=Registry(usb,Path(directory)/'keys',notify,bind_socket,require_network)
         self.execution_lock=threading.RLock()
         self.apk=apk
+        self.environment=environment
+
+    def runtime_info(self):
+        from backend.online_shrink import PREPARE_TIMEOUT
+        result={'platform':'android','online_shrink_prepare_timeout_s':PREPARE_TIMEOUT}
+        if self.environment is not None:result.update(self.environment())
+        path=self.resources/'mobile-build.json'
+        if path.is_file() and path.stat().st_size<=4096:
+            import re
+            identity=json.loads(path.read_text())
+            for key,size in (('revision',40),('source_sha256',64)):
+                value=identity.get(key,'')
+                if isinstance(value,str) and re.fullmatch('[0-9a-f]{'+str(size)+'}',value):result[key]=value
+        return result
 
     def adb(self,serial=None):return self.registry.driver(serial)
 
@@ -113,7 +127,8 @@ class EventStream(io.TextIOBase):
 class Runtime:
     def __init__(self,native,usb,directory,resources,apk=None):
         self.native=native;self.directory=Path(directory);self.directory.mkdir(parents=True,exist_ok=True)
-        self.provider=Provider(resources,directory,usb,self.emit,apk,native.bindTcpSocket)
+        self.provider=Provider(resources,directory,usb,self.emit,apk,native.bindTcpSocket,
+                               lambda:native.requireLocalNetwork(),lambda:json.loads(str(native.hostEnvironment())))
         from backend import host
         host.install(self.provider)
         from backend.service import Service
@@ -206,6 +221,21 @@ class Runtime:
     def busy(self):
         worker=self.service.worker
         return bool(worker and worker.is_alive())
+
+    def requires_network(self,command,parameters):
+        """Ask before user-requested network work; never gate local/USB tools."""
+        from backend.transport import wireless_serial
+        p=json.loads(str(parameters))
+        if not isinstance(p,dict):raise ValueError('Parameters must be an object')
+        if command in ('adb_connect','probe_update','verify_openwrt','ota_probe','ota_apply','ota_status','ota_reboot'):
+            return True
+        if command=='devices':return bool(self.provider.registry.tcp)
+        if wireless_serial(p.get('serial')):return True
+        if command=='plan' and p.get('choices',{}).get('method')=='update':return True
+        if command in ('start','resume','retry','expand_reset','online_fallback'):
+            record=self.service.store.load(p['transaction'])
+            return record['choices'].get('method')=='update' or wireless_serial(p.get('serial') or record['device'].get('serial'))
+        return False
 
     def import_package(self,path):
         from .files import extract_package

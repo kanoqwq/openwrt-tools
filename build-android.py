@@ -78,6 +78,10 @@ def main():
     if not (MOBILE/'src-tauri/Cargo.lock').exists():
         subprocess.run(['cargo','generate-lockfile','--manifest-path',str(MOBILE/'src-tauri/Cargo.toml')],cwd=MOBILE,env=env,check=True)
     before=sources()
+    from mobile.build_info import build_info
+    revision=subprocess.check_output(['git','-C',str(HERE),'rev-parse','HEAD'],text=True).strip()
+    identity=build_info(revision,before)
+    env['OPENWRT_TOOLS_BUILD_INFO']=json.dumps(identity,sort_keys=True)
     state=HERE/'out/build-state';state.mkdir(parents=True,exist_ok=True)
     (state/('android-source-'+args.target+'.json')).write_text(json.dumps(before,indent=2)+'\n')
     command=[str(cli),'android','build','--target',args.target,'--apk']
@@ -91,7 +95,7 @@ def main():
     apks=[p for p in apks if ('debug' in p.name)==args.debug]
     if len(apks)!=1:raise ValueError('Expected one ARM64 APK: '+repr(apks))
     from mobile.apk import validate
-    validation=validate(apks[0],args.target)
+    validation=validate(apks[0],args.target,expected_build=identity)
     artifact=HERE/'artifacts/android';artifact.mkdir(parents=True,exist_ok=True)
     label='OpenWrt-Tools'+('-emulator' if args.target=='x86_64' else '')
     target=artifact/(label+('-debug.apk' if args.debug else '.apk'))

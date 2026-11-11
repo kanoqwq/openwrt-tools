@@ -22,6 +22,14 @@ def current():
     return _provider
 
 
+def runtime_info():
+    if _provider is None:return {'platform':'desktop'}
+    try:
+        info=_provider.runtime_info()
+        return info if isinstance(info,dict) else {'platform':'android','metadata':'unavailable'}
+    except Exception:return {'platform':'android','metadata':'unavailable'}
+
+
 def resource(name):
     if _provider is None:return None
     base=Path(_provider.resources).resolve();path=(base/name).resolve()

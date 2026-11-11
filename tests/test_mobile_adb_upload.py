@@ -102,12 +102,30 @@ class Upload(unittest.TestCase):
             def connect(endpoint,timeout,binder=None):return ShortSocket(socket.create_connection(endpoint,timeout=2))
             try:
                 with patch('android_host.network.connect',side_effect=connect),patch.object(registry,'signer',return_value=Mock()):
-                    result=Driver(registry,'fixture').run(['push',str(path),'/data/local/tmp/helper'],timeout=.5)
+                    context=Mock()
+                    result=Driver(registry,'fixture').run(['push',str(path),'/data/local/tmp/helper'],timeout=.5,context=context)
                     self.assertEqual(result.returncode,0)
+                    self.assertEqual(context.transfer.call_args_list[0].args[1:3],(0,len(payload)))
+                    self.assertEqual(context.transfer.call_args_list[-1].args[1:3],(len(payload),len(payload)))
             finally:
                 registry.close('fixture');thread.join(3)
         self.assertFalse(thread.is_alive());self.assertEqual(errors,[])
         self.assertTrue(short);self.assertEqual(len(opens),1);self.assertEqual(received,payload)
+
+    def test_upload_failure_keeps_progress_and_budget_without_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'f2fs-online-arm64';path.write_bytes(b'x'*100)
+            registry=Registry(Mock(),tmp);client=Mock();registry.clients['fixture']=client
+            def fail(*args,**kw):
+                kw['progress_callback']('remote',40,100)
+                raise TimeoutError('Reading timed out (888 seconds)')
+            client.push.side_effect=fail;context=Mock()
+            with self.assertRaisesRegex(ConnectionError,r'40/100 bytes; read_timeout_s=888'):
+                Driver(registry,'fixture').run(['push',str(path),'/data/local/tmp/staged'],timeout=888,context=context)
+            self.assertEqual(client.push.call_count,1)
+            client.close.assert_called_once()
+            self.assertEqual(context.transfer.call_args_list[-1].args[1:3],(40,100))
+            self.assertNotIn('fixture',str(context.log.call_args_list))
 
 
 if __name__=='__main__':unittest.main()

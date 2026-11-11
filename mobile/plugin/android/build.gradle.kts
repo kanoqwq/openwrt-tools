@@ -45,7 +45,9 @@ val stagePython by tasks.registering(Sync::class) {
     from("../../../backend") { into("backend"); exclude("__pycache__/**") }
     into(layout.buildDirectory.dir("generated/python"))
 }
+val installerBuildInfo = providers.environmentVariable("OPENWRT_TOOLS_BUILD_INFO").orElse("{\"revision\":\"unrecorded\"}")
 val stageResources by tasks.registering(Sync::class) {
+    inputs.property("installerBuildInfo", installerBuildInfo)
     into(layout.buildDirectory.dir("generated/assets/openwrt-runtime"))
     from("../../../runtime/storage-e5.sh")
     from("../../../runtime/storage-mu300.sh")
@@ -59,6 +61,9 @@ val stageResources by tasks.registering(Sync::class) {
     from("../../../runtime/luci-app-unisoc-ota/root/usr/share/rpcd/acl.d/unisoc-ota.json")
     from("../../../ota-native/lz4raw-aarch64.so")
     from("../../../release-index.py")
+    doLast {
+        layout.buildDirectory.file("generated/assets/openwrt-runtime/mobile-build.json").get().asFile.writeText(installerBuildInfo.get())
+    }
 }
 // AGP 9.2+ issue 550220873: use the new-typed block overload for libraries.
 android.sourceSets {

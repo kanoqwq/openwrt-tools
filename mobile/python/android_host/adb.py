@@ -14,13 +14,15 @@ import time
 
 
 class Registry:
-    def __init__(self, usb, directory, notify=lambda *_:None, bind_socket=None):
+    def __init__(self, usb, directory, notify=lambda *_:None, bind_socket=None, require_network=None):
         self.usb=usb;self.directory=Path(directory);self.notify=notify
         self.clients={};self.locks={};self.tcp={};self.state={}
         self.guard=threading.RLock()
         self.bind_socket=bind_socket
+        self.require_network=require_network
 
     def tcp_connection(self,address,timeout):
+        if self.require_network is not None:self.require_network()
         from .network import connect
         return connect(address,timeout,self.bind_socket)
 
@@ -189,7 +191,23 @@ class Driver:
                         code,output=self.shell(command,timeout,binary=op=='exec-out',sink=sink,context=context)
                     elif op=='push':
                         if len(tail)!=2 or not Path(tail[0]).is_file():raise ValueError('Push requires one local file')
-                        r.client(self.serial).push(tail[0],tail[1],transport_timeout_s=timeout or 30,read_timeout_s=timeout or 1800)
+                        local=Path(tail[0]);total=local.stat().st_size;done=0;last=0
+                        since=time.monotonic()
+                        if context is not None:
+                            context.activity('Uploading '+local.name+' / 正在上传 '+local.name)
+                            context.log(f'ADB push {local.name}: {total} bytes; transport_timeout_s={timeout or 30}; read_timeout_s={timeout or 1800}',scope='transport')
+                            context.transfer(local.name,0,total,since)
+                        def progress(_name,current,size):
+                            nonlocal done,last
+                            # Vendored adb-shell 0.4.4 reports each DATA chunk, not an accumulated offset.
+                            done+=current;now=time.monotonic()
+                            if context is not None and (done==size or now-last>=.2):
+                                context.transfer(local.name,done,size,since);last=now
+                        try:
+                            r.client(self.serial).push(str(local),tail[1],progress_callback=progress,
+                                transport_timeout_s=timeout or 30,read_timeout_s=timeout or 1800)
+                        except Exception as error:
+                            raise ConnectionError(f'ADB push {local.name}: {done}/{total} bytes; read_timeout_s={timeout or 1800}; {error}') from error
                     elif op=='pull':
                         if len(tail)!=2:raise ValueError('Pull requires source and destination')
                         self.pull(tail[0],Path(tail[1]),timeout=timeout or 45)

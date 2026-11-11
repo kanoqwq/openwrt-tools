@@ -13,12 +13,14 @@ def write_all(connection, data, timeout):
     """
     deadline=None if timeout is None else time.monotonic()+timeout
     remaining=memoryview(data)
+    def stalled():
+        return TimeoutError(f'ADB send timed out: {len(data)-len(remaining)}/{len(data)} frame bytes / ADB 发送超时')
     while remaining:
         budget=None if deadline is None else deadline-time.monotonic()
         if budget is not None and budget<=0:
-            raise TimeoutError('ADB send timed out / ADB 发送超时')
+            raise stalled()
         _,ready,_=select.select([], [connection], [], budget)
-        if not ready:raise TimeoutError('ADB send timed out / ADB 发送超时')
+        if not ready:raise stalled()
         try:sent=connection.send(remaining)
         except (BlockingIOError,InterruptedError):continue
         if sent<=0:raise ConnectionError('ADB connection closed during send / ADB 发送过程中连接断开')

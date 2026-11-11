@@ -238,6 +238,9 @@ class Service:
             header['model_warning'] = record['device'].get('model_mismatch')
             header['model_override'] = record.get('model_override')
             header['package'] = {key:record['package'].get(key) for key in ('adapter','profile','kernel','layout')}
+            from .host import runtime_info
+            header['current_installer']=runtime_info()
+            header['operation_installer']=record.get('installer_environment')
             parts = ['OpenWrt Installer diagnostics (redacted)\n'+ctx.sanitize(json.dumps(header,ensure_ascii=False,indent=2))]
             for name in ('debug.previous.ndjson','debug.ndjson'):
                 path = ctx.directory/name
@@ -572,6 +575,10 @@ class Service:
     def run(self, context, adapter):
         r = context.record
         try:
+            from .host import runtime_info
+            r['installer_environment']=runtime_info()
+            self.store.save(r)
+            context.log('Installer runtime: '+json.dumps(r['installer_environment'],sort_keys=True),scope='host')
             with ExitStack() as locks:
                 for identity in sorted({r['device']['serial'], r['device']['cid']}):
                     locks.enter_context(DeviceLock(self.store.base, identity))

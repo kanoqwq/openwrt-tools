@@ -1,5 +1,6 @@
 """Validate packaged ABIs and Android ARM64 16 KiB LOAD alignment."""
 import io
+import json
 import struct
 import zipfile
 
@@ -12,7 +13,7 @@ def elf_alignment(data):
     return [struct.unpack_from('<Q',data,offset+i*size+48)[0] for i in range(count) if struct.unpack_from('<I',data,offset+i*size)[0]==1]
 
 
-def validate(path,target):
+def validate(path,target,expected_build=None):
     abi={'aarch64':'arm64-v8a','x86_64':'x86_64'}[target]
     checked=[]
     def inspect(name,data):
@@ -22,6 +23,10 @@ def validate(path,target):
     with zipfile.ZipFile(path) as archive:
         names=archive.namelist()
         if len(names)!=len(set(names)):raise ValueError('Duplicate APK entries')
+        if expected_build is not None:
+            name='assets/openwrt-runtime/mobile-build.json'
+            if name not in names or json.loads(archive.read(name))!=expected_build:
+                raise ValueError('APK embedded build identity differs from current sources')
         abis={n.split('/')[1] for n in names if n.startswith('lib/') and n.endswith('.so')}
         if abis!={abi} or 'lib/'+abi+'/libopenwrt_tools_mobile.so' not in names:
             raise ValueError('APK ABI differs from selected target: '+str(abis))
