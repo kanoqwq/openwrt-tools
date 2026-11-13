@@ -293,9 +293,12 @@ def compare(old, new):
             raise ValueError('Incompatible full releases: ' + k)
     from .ota_runtime import build, bootstrap
     runtime, busybox, support = build(new)
-    # The exported updater must also install the protocol engine capable of
-    # accepting its future patches, including on the very first migration.
-    if busybox and 'usr/bin/python3' in runtime:
+    # The RAM applier belongs to the generator; installed files belong to the
+    # target release. Never replace an embedded target updater with the local
+    # generator's copy: an older web generator would silently downgrade the
+    # new engine, view, ACL and generator while advancing the firmware marker.
+    # Only legacy releases with no built-in updater need first-migration files.
+    if busybox and 'usr/bin/python3' in runtime and 'usr/lib/unisoc-ota/engine.py' not in new.entries:
         for path,desc in runtime.items():
             if not path.startswith('ota/'):continue
             name=path[4:]
@@ -407,8 +410,8 @@ def analyze(old_path, new_path, output=None, progress=lambda *_: None, index_dir
         result, extra = compare(old, new)
         if index_directory is not None and result['can_export']:
             from .release_index import save_index
-            # compare() includes the updater files actually supplied by this
-            # generator. Keep that target baseline, not stale package defaults.
+            # Keep the installed target, including first-migration additions
+            # only when that full release did not already embed its updater.
             result['index_path'] = str(save_index(new,index_directory))
         if output:
             if result['blockers']:

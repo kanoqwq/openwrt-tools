@@ -179,6 +179,51 @@ class GenerationTests(unittest.TestCase):
                 data=json.loads(patch.archive.read('blobs/'+acl))
                 self.assertIn('rollback_check',data['luci-app-unisoc-ota']['read']['ubus']['unisoc-ota'])
 
+    def test_embedded_target_updater_is_not_replaced_by_generator_runtime(self):
+        names = ('usr/lib/unisoc-ota/engine.py', 'usr/lib/unisoc-ota/builder.py',
+                 'usr/lib/unisoc-ota/rpc.py', 'usr/lib/unisoc-ota/generator/ota_package.py',
+                 'usr/libexec/rpcd/unisoc-ota',
+                 'www/luci-static/resources/view/system/unisoc-ota.js',
+                 'usr/share/rpcd/acl.d/unisoc-ota.json')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = {name: b'previous target '+name.encode() for name in names}
+            after = {name: b'new target '+name.encode() for name in names}
+            after['usr/bin/python3'] = b'fixture interpreter'
+            mu_release(root/'old', 'mu300-r1', before)
+            mu_release(root/'new', 'mu300-r2', after)
+            (root/'new/payload/busybox').write_bytes(b'fixture static helper')
+            output = root/'patch.ota'
+            result = analyze(root/'old', root/'new', output)
+            self.assertTrue(result['can_export'], result['blockers'])
+            with Patch(output) as patch:
+                operations = {op['path']:op for op in patch.manifest['operations']}
+                for name in names:
+                    wanted = hashlib.sha256(after[name]).hexdigest()
+                    self.assertEqual(operations[name]['after']['sha256'], wanted, name)
+                    self.assertEqual(patch.archive.read('blobs/'+wanted), after[name])
+                    self.assertEqual(patch.manifest['release_index']['release']['entries'][name]['sha256'], wanted)
+                # The isolated applier still uses the producer's validated
+                # engine; that is intentionally separate from installed data.
+                producer = patch.manifest['runtime']['ota/engine.py']['sha256']
+                self.assertNotEqual(producer, operations[names[0]]['after']['sha256'])
+                self.assertNotIn('usr/lib/unisoc-ota/baseline.py', operations)
+
+    def test_unchanged_embedded_updater_does_not_become_generator_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            files = {'usr/lib/unisoc-ota/engine.py': b'target engine unchanged',
+                     'usr/bin/python3': b'fixture interpreter', 'usr/lib/test': b'old'}
+            mu_release(root/'old', 'mu300-r1', files)
+            mu_release(root/'new', 'mu300-r2', dict(files, **{'usr/lib/test': b'new'}))
+            (root/'new/payload/busybox').write_bytes(b'fixture static helper')
+            result = analyze(root/'old', root/'new')
+            self.assertTrue(result['can_export'], result['blockers'])
+            self.assertEqual([op['path'] for op in result['manifest']['operations']], ['usr/lib/test'])
+            index = result['manifest']['release_index']['release']['entries']
+            self.assertEqual(index['usr/lib/unisoc-ota/engine.py']['sha256'],
+                             hashlib.sha256(files['usr/lib/unisoc-ota/engine.py']).hexdigest())
+
     def test_web_assets_and_core_runtime_are_updatable(self):
         with tempfile.TemporaryDirectory() as d:
             d=Path(d)
