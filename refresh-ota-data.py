@@ -9,10 +9,12 @@ import hashlib
 import json
 from pathlib import Path
 from package_gui import sources, validate_artifact, digest
+from resources import ASSETS
 
 HERE = Path(__file__).resolve().parent
 DATA = {'runtime/luci-app-unisoc-ota/root/usr/lib/unisoc-ota/'+n:n
-        for n in ('engine.py', 'boot.py', 'rpc.py', 'proxy.sh')}
+        for n in ('engine.py', 'boot.py', 'rpc.py', 'proxy.sh','uploads.py','baseline.py','builder.py')}
+DATA.update({path.relative_to(HERE).as_posix():name for name,path in ASSETS.items() if name.startswith('generator/')})
 # errors.js is also compiled into the desktop UI: changes require a native build.
 DATA.update({
     'runtime/luci-app-unisoc-ota/htdocs/luci-static/resources/view/system/unisoc-ota.js': 'unisoc-ota.js',
@@ -32,14 +34,17 @@ def refresh(artifact, platform):
     if not changed: return metadata
     before = dict(metadata['files']); updates = {}
     for name in sorted(changed):
+        if name not in old_source:
+            raise ValueError('Native runtime layout changed; rebuild before refreshing: '+name)
         filename = DATA[name]
         candidates = [p for p in before if p.endswith('/_internal/'+filename)]
         if len(candidates) != 1: raise ValueError('Uncompiled native payload is not unique: '+filename)
         relative = candidates[0]
         if '.app/' in relative: raise ValueError('Refusing to edit a signed application bundle')
         target = artifact/relative
-        content = (HERE/name).read_bytes().replace(b'\r\n', b'\n')
-        if hashlib.sha256(target.read_bytes().replace(b'\r\n', b'\n')).hexdigest() != old_source[name]:
+        normalize=lambda value:value if Path(name).suffix=='.zip' else value.replace(b'\r\n',b'\n')
+        content = normalize((HERE/name).read_bytes())
+        if hashlib.sha256(normalize(target.read_bytes())).hexdigest() != old_source[name]:
             raise ValueError('Native payload differs from original source: '+name)
         if hashlib.sha256(content).hexdigest() != expected[name]: raise ValueError('Unexpected payload source')
         target.write_bytes(content)

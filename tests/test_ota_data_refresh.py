@@ -53,7 +53,7 @@ class DataRefreshTests(unittest.TestCase):
             self.assertEqual(json.loads((artifact/'build.json').read_text())['source'], before)
 
     def test_luci_view_and_acl_are_plain_data_on_both_native_platforms(self):
-        keys = [key for key in refresh.DATA if key.endswith(('.js', '.json'))]
+        keys = [key for key in refresh.DATA if key.endswith(('.js', '.json')) and '/generator/' not in key]
         self.assertEqual(len(keys), 2)
         for platform in ('windows-x64', 'macos-arm64'):
             for key in keys:
@@ -93,3 +93,19 @@ class DataRefreshTests(unittest.TestCase):
             with patch.object(refresh,'HERE',installer),patch.object(refresh,'sources',return_value=after):
                 with self.assertRaisesRegex(ValueError,'native rebuild required'):refresh.refresh(artifact,'windows-x64')
             self.assertEqual(json.loads((artifact/'build.json').read_text())['source'],before)
+
+    def test_source_dependency_zip_is_refreshed_without_newline_conversion(self):
+        with tempfile.TemporaryDirectory() as d:
+            artifact,installer,before,after=self.fixture(Path(d))
+            key='runtime/luci-app-unisoc-ota/root/usr/lib/unisoc-ota/generator/extfs-sources.zip'
+            old=b'PK\x03\x04old\r\nbinary';new=b'PK\x03\x04new\r\nbinary'
+            source=installer/key;source.parent.mkdir(parents=True,exist_ok=True);source.write_bytes(new)
+            filename='tools/backend/_internal/'+refresh.DATA[key]
+            target=artifact/filename;target.parent.mkdir(parents=True);target.write_bytes(old)
+            meta=json.loads((artifact/'build.json').read_text());meta['source'][key]=hashlib.sha256(old).hexdigest()
+            meta['files'][filename]=hashlib.sha256(old).hexdigest()
+            (artifact/'build.json').write_text(json.dumps(meta))
+            after=dict(meta['source']);after[key]=hashlib.sha256(new).hexdigest()
+            with patch.object(refresh,'HERE',installer),patch.object(refresh,'sources',return_value=after):
+                refresh.refresh(artifact,'windows-x64')
+            self.assertEqual(target.read_bytes(),new)

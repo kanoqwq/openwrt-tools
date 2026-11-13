@@ -19,9 +19,13 @@ def stage(root):
             target.parent.mkdir(parents=True, exist_ok=True)
             if target.is_symlink():
                 target.unlink()
-            target.write_bytes(path.read_bytes().replace(b'\r\n', b'\n'))
+            data=path.read_bytes()
+            target.write_bytes(data if path.suffix in ('.zip','.so') else data.replace(b'\r\n', b'\n'))
             target.chmod(0o755 if name.startswith(('etc/init.d/', 'usr/libexec/')) else 0o644)
     (root / 'etc/unisoc-ota').mkdir(mode=0o700, exist_ok=True)
+    (root / 'etc/unisoc-ota/builder').mkdir(mode=0o700, exist_ok=True)
+    for name in ('lz4raw-aarch64.so','build.json'):
+        shutil.copy2(TOP/'ota-native'/name,root/'usr/lib/unisoc-ota'/name)
     rc = root / 'etc/rc.d/S06unisoc-ota'
     rc.parent.mkdir(parents=True, exist_ok=True)
     if rc.is_symlink():

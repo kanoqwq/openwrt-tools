@@ -11,7 +11,7 @@ def resource(name):
         path = Path(sys._MEIPASS) / name
     else:
         # Standalone CLI export copies runtime helpers beside this module.
-        beside = Path(__file__).with_name(name)
+        beside = Path(__file__).parent / name
         if beside.is_file():
             return beside
         if name == 'engine.py' and beside.with_name('boot.py').is_file() and beside.with_name('ota_engine.py').is_file():

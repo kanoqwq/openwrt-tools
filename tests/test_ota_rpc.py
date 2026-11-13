@@ -24,18 +24,46 @@ class RPCTests(unittest.TestCase):
             self.rpc.main()
 
     def test_authenticated_metadata_is_accepted_for_every_method(self):
-        for method in ('status','inspect','start','rollback_check','rollback','discard_recovery','reboot'):
+        for method in self.rpc.METHODS:
             args = {'ubus_rpc_session': 'a'*32}
-            if method == 'start': args['id'] = 'b'*64
+            if method in ('start','start_generated'): args['id'] = 'b'*64
+            if method == 'generate':args['mode']='pair'
             with patch.object(self.rpc, 'dispatch', return_value={}) as dispatch:
                 self.call(method, args)
-                dispatch.assert_called_once_with(method, None, 'b'*64 if method == 'start' else None)
+                if method=='generate':dispatch.assert_called_once_with(method,mode='pair')
+                else:dispatch.assert_called_once_with(method, None, 'b'*64 if method in ('start','start_generated') else None)
 
     def test_other_arguments_still_rejected(self):
         with self.assertRaisesRegex(ValueError, 'Unexpected RPC'):
             self.call('status', {'ubus_rpc_session':'a'*32,'command':'not-allowed'})
         with self.assertRaisesRegex(ValueError, 'must be an object'):
             self.call('status', ['not-an-object'])
+        for method in ('generate','start_generated','inspect_generated','build_status'):
+            with self.subTest(method=method),self.assertRaisesRegex(ValueError,'Unexpected RPC'):
+                self.call(method,{'path':'/etc/shadow','mode':'pair'})
+
+    def test_generated_apply_preserves_original_download_and_review_id(self):
+        from test_ota import package
+        with tempfile.TemporaryDirectory() as d:
+            self.rpc.STATE=Path(d);home=Path(d)/'builder';home.mkdir()
+            source=package(home/'update.ota')
+            with self.rpc.Patch(source) as content:review=content.id
+            staged=self.rpc.stage_upload(source,review,consume=False)
+            self.assertTrue(source.is_file());self.assertTrue(staged.is_file())
+            with self.assertRaisesRegex(ValueError,'differs'):
+                self.rpc.stage_upload(source,'b'*64,consume=False)
+            self.assertTrue(source.is_file());self.assertFalse(list(Path(d).glob('candidate-*')))
+
+    def test_generation_lock_does_not_misreport_old_completed_update_as_running(self):
+        import fcntl
+        with tempfile.TemporaryDirectory() as d:
+            self.rpc.STATE=Path(d);self.rpc.JOB=Path(d)/'job.json'
+            self.rpc.JOB.write_text(json.dumps({'status':'complete'}))
+            (Path(d)/'builder').mkdir();(Path(d)/'builder/job.json').write_text(json.dumps({'status':'running'}))
+            with (Path(d)/'job.lock').open('a') as held,patch.object(self.rpc,'Engine') as engine:
+                engine.return_value.status.return_value={'identity':{'version':'r1'}}
+                fcntl.flock(held,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                self.assertEqual(self.rpc.dispatch('status')['job']['status'],'complete')
 
     def test_bootstrap_passes_review_id_for_generic_web_upload(self):
         with patch.object(sys,'argv',['rpc.py','start','/target/etc/unisoc-ota/upload.ota','b'*64]), \
@@ -74,7 +102,12 @@ class RPCTests(unittest.TestCase):
         for ram in ('','/'):
             with self.subTest(ram=ram), tempfile.TemporaryDirectory() as d:
                 root=Path(d);self.rpc.ROOT=d;self.rpc.STATE=root/'etc/unisoc-ota';self.rpc.STATE.mkdir(parents=True)
-                self.rpc.JOB=self.rpc.STATE/'job.json';upload=self.rpc.STATE/'upload.ota';upload.write_bytes(b'fixture reviewed payload')
+                self.rpc.JOB=self.rpc.STATE/'job.json';upload=self.rpc.STATE/'upload.ota'
+                # This fixture mocks the protocol verifier below, but upload
+                # staging still validates a real ZIP/container structure.
+                import zipfile
+                with zipfile.ZipFile(upload,'w') as zipped:
+                    zipped.writestr('manifest.json',json.dumps({'format':'unisoc-diff-ota-2'}))
                 home=Path('/proc/1/root' if ram else d)/'tmp'/('unisoc-ota-'+'b'*64)
                 with (self.rpc.STATE/'job.lock').open('a') as held, \
                      patch.dict(os.environ,{'UNISOC_OTA_RAM':ram}), \
@@ -238,6 +271,11 @@ class RPCTests(unittest.TestCase):
             children=[]
             def harmless(command, **kwargs):
                 command=list(command); command[-1]=shutil.which('true')
+                # This test verifies inherited locks, not a host-wide flush.
+                # Keep production sync intact without syncing every WSL/9p
+                # disk from an otherwise harmless unit-test subprocess.
+                self.assertIn('os.sync()',command[2])
+                command[2]=command[2].replace('os.sync()','None')
                 kwargs['stderr']=subprocess.PIPE
                 child=launch(command,**kwargs);children.append(child);return child
             try:

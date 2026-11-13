@@ -6,15 +6,18 @@ const resources = path.join(__dirname, '../runtime/luci-app-unisoc-ota/htdocs/lu
 const source = fs.readFileSync(path.join(resources, 'view/system/unisoc-ota.js'), 'utf8');
 let messages;
 const idle = () => ({identity:{version:'test-r2'},transaction:{id:'a'.repeat(64),status:'complete'},recovery:{available:true,bytes:1048576,count:1},job:{status:'complete',result:{}}});
-function fixture(write=true, initial=idle(), locale="en") {
+function fixture(write=true, initial=idle(), locale="en", initialBuild={job:{status:'idle'},baseline:{available:false},uploads:{}}) {
     const state={calls:[],arguments:[],declarations:[],notifications:[],ticks:new Set(),modal:[],writable:write,status:initial,rejectStart:false,rejectInspect:null,rejectRollback:false,rejectStatus:false,rejectReboot:null,reconnects:0,rollbackCheck:{available:true,reason:'ready',conflicts:[]}};
-    const E=(tag,attrs={},children=[])=>({tag,...attrs,children,appendChild(node){this.children.push(node);},setAttribute(name,value){this[name]=value;}});
-    const rpc={declare:options=>{state.declarations.push(options);const {method}=options;return (...args)=>{
+    state.buildStatus=initialBuild;state.downloads=[];state.uploadPaths=[];
+    const E=(tag,attrs={},children=[])=>({tag,...attrs,children,appendChild(node){this.children.push(node);},setAttribute(name,value){this[name]=value;},submit(){state.downloads.push(this);},remove(){}});
+    const rpc={getSessionID:()=>'test-session',declare:options=>{state.declarations.push(options);const {method}=options;return (...args)=>{
         state.calls.push(method);
         state.arguments.push([method,args]);
         if(method==='status')return state.statusError?Promise.reject(Error(state.statusError)):state.rejectStatus?Promise.reject(Error('offline')):Promise.resolve(state.status);
         if(method==='inspect'&&state.rejectInspect)return Promise.reject(Error(state.rejectInspect));
-        if(method==='inspect')return state.inspectPromise||Promise.resolve(state.inspection||{id:'a'.repeat(64),applicable:true,manifest:{base_version:'r1',target_version:'r2',operations:[]}});
+        if(method==='inspect'||method==='inspect_generated')return state.inspectPromise||Promise.resolve(state.inspection||{id:'a'.repeat(64),applicable:true,manifest:{base_version:'r1',target_version:'r2',operations:[]}});
+        if(method==='build_status')return state.buildError?Promise.reject(Error(state.buildError)):Promise.resolve(state.buildStatus);
+        if(method==='generate')return state.generateError?Promise.reject(Error(state.generateError)):Promise.resolve({status:'running',mode:args[0],phase:'queued'});
         if(method==='start'&&state.rejectStart)return Promise.reject(Error('start rejected'));
         if(method==='start'&&state.startError)return Promise.reject(Error(state.startError));
         if(method==='start'&&state.startPromise)return state.startPromise;
@@ -24,12 +27,13 @@ function fixture(write=true, initial=idle(), locale="en") {
         if(method==='rollback'&&state.rejectRollback)return Promise.reject(Error('rollback rejected'));
         return Promise.resolve({status:'running'});
     }}};
-    const ui={uploadFile:()=>{state.uploads=(state.uploads||0)+1;return state.uploadPromise||Promise.resolve();},showModal:(_title,nodes)=>{state.modal=nodes;},hideModal:()=>{state.modal=[];},addNotification:(_a,node)=>state.notifications.push(node.children),awaitReconnect:()=>{state.reconnects++;}};
-    const view=new Function('view','rpc','ui','poll','E','document','L','M',source)({extend:v=>v},rpc,ui,{add:fn=>state.ticks.add(fn),remove:fn=>state.ticks.delete(fn)},E,{documentElement:{lang:'en'}},{hasViewPermission:()=>state.writable},{injectCss:()=>{state.themeInjected=true;},localizeMenu:()=>{},uiLanguage:()=>locale});
+    const ui={uploadFile:(name)=>{state.uploadPaths.push(name);state.uploads=(state.uploads||0)+1;return state.uploadPromise||Promise.resolve();},showModal:(title,nodes)=>{state.modalTitle=title;state.modal=nodes;},hideModal:()=>{state.modal=[];},addNotification:(_a,node)=>state.notifications.push(node.children),awaitReconnect:()=>{state.reconnects++;}};
+    const view=new Function('view','rpc','ui','poll','E','document','L','M',source)({extend:v=>v},rpc,ui,{add:fn=>state.ticks.add(fn),remove:fn=>state.ticks.delete(fn)},E,{documentElement:{lang:'en'},body:{appendChild:()=>{}}},{env:{cgi_base:'/cgi-bin'},hasViewPermission:()=>state.writable},{injectCss:()=>{state.themeInjected=true;},localizeMenu:()=>{},uiLanguage:()=>locale});
     const all=nodes=>nodes.flatMap(n=>!n||typeof n!=='object'?[]:[n,...all(Array.isArray(n.children)?n.children:[])]);
-    const root=view.render([messages,state.status]);
+    const root=view.render([messages,state.status,state.buildStatus]);
     state.button=name=>all([root,...state.modal]).find(n=>n.tag==='button'&&(n['aria-label']===name||n.children===name));
     state.modalButton=name=>all(state.modal).find(n=>n.tag==='button'&&n.children===name);
+    state.buildMode=()=>all([root]).find(n=>n.id==='ota-build-mode');
     state.text=()=>all([root]).map(n=>n.textContent||'').join(' ');state.root=root;
     state.overlay=()=>all([root]).find(n=>n.class==='mud-ota-overlay');
     state.dispose=()=>view.unload();
@@ -205,6 +209,51 @@ async function main(){
     const abandoned=fixture();let finish;abandoned.inspectPromise=new Promise(r=>finish=r);
     const pending=abandoned.button('Import patch').onclick();await abandoned.flush();abandoned.dispose();
     finish({id:'a'.repeat(64),applicable:true,manifest:{operations:[]}});await pending;assert.equal(abandoned.modal.length,0);assert(abandoned.overlay().hidden);
-    console.log('PASS LuCI permission, rejected/lost start, rollback failure, polling outage and recovery');
+    for(const mode of ['current','pair']){
+        const clean={available:true,version:'r1'};
+        const gen=fixture(true,idle(),'en',{job:{status:'idle'},baseline:clean,uploads:{'old.zip':20,'new.zip':30}});
+        gen.buildMode().value=mode;gen.buildMode().onchange();
+        assert(!gen.button('Generate .ota').disabled);
+        await gen.button('Generate .ota').onclick();
+        assert(gen.arguments.some(([method,args])=>method==='generate'&&args[0]===mode));
+        assert(gen.button('Import patch').disabled);
+        assert(!gen.calls.includes('start')&&!gen.calls.includes('start_generated'),'Generation started writes');
+        gen.buildStatus={job:{status:'complete',id:'a'.repeat(64),mode,base_version:'r1',target_version:'r2',files:3,bytes:1000},baseline:clean,download:true};
+        for(const tick of [...gen.ticks])await tick();
+        assert.match(gen.modalTitle,/Apply it now/);
+        assert.equal(gen.ticks.size,0,'Finished generation kept polling');
+        assert(gen.modalButton('Later'));assert(gen.modalButton('Download .ota'));assert(gen.modalButton('Check and apply'));
+        gen.modalButton('Download .ota').click();
+        assert.equal(gen.downloads.length,1);
+        assert.equal(gen.downloads[0].action,'/cgi-bin/cgi-download');
+        assert(gen.downloads[0].children.some(c=>c.name==='path'&&c.value==='/etc/unisoc-ota/builder/update.ota'));
+        assert(gen.downloads[0].children.some(c=>c.name==='sessionid'&&c.value==='test-session'));
+        await gen.modalButton('Check and apply').click();
+        assert(gen.calls.includes('inspect_generated'));
+        assert(!gen.calls.includes('start_generated'),'Inspection skipped explicit confirmation');
+        gen.modalButton('Cancel').click();assert(!gen.calls.includes('start_generated'));
+        gen.button('View generated patch').onclick();await gen.modalButton('Check and apply').click();
+        await gen.modalButton('Apply patch').click();
+        assert(gen.arguments.some(([method,args])=>method==='start_generated'&&args[0]==='a'.repeat(64)));
+        assert(!gen.calls.includes('start'),'Generated patch used unrelated upload path');
+    }
+    const needsBase=fixture();assert(needsBase.button('Generate .ota').disabled);
+    needsBase.buildStatus={job:{status:'idle'},baseline:{available:false},uploads:{'old.zip':10}};
+    await needsBase.button('Upload old full ZIP').onclick();
+    assert.equal(needsBase.uploadPaths[0],'/etc/unisoc-ota/builder/old.zip');
+    assert(!needsBase.button('Save current baseline').disabled);
+    await needsBase.button('Save current baseline').onclick();
+    needsBase.buildStatus={job:{status:'complete',mode:'baseline'},baseline:{available:true,version:'r1'},uploads:{}};
+    for(const tick of [...needsBase.ticks])await tick();
+    assert(!needsBase.modalButton('Check and apply'),'Baseline import offered a meaningless flash');
+    assert.equal(needsBase.ticks.size,0);
+    const resumed=fixture(true,idle(),'en',{job:{status:'running'},baseline:{available:false},uploads:{}});
+    assert(resumed.button('Import patch').disabled);assert.equal(resumed.ticks.size,1);
+    resumed.buildError='offline';for(const tick of [...resumed.ticks])await tick();
+    assert(resumed.button('Import patch').disabled);assert.equal(resumed.notifications.length,0);
+    resumed.dispose();assert.equal(resumed.ticks.size,0);
+    const readonly=fixture(false);assert(readonly.button('Generate .ota').disabled);assert(readonly.button('Upload new full ZIP').disabled);
+    assert.equal(fixture().ticks.size,0,'Idle page kept polling');
+    console.log('PASS LuCI update recovery, ZIP import, both generators, result modal, download, explicit review/apply, permissions and no idle polling');
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});

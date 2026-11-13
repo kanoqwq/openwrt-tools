@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from resources import ASSETS
 
 
 def main():
@@ -21,7 +22,7 @@ def main():
     source = root/'release-index.py'
     modules = root
     engine = root/'runtime/luci-app-unisoc-ota/root/usr/lib/unisoc-ota/engine.py'
-    inputs = [source, Path(__file__), engine, modules/'backend/ota_engine.py',
+    inputs = [source, Path(__file__), *ASSETS.values(), modules/'backend/ota_engine.py',
               modules/'backend/release_index.py', modules/'backend/ota_package.py']
     fingerprint = lambda: {str(p.relative_to(root)).replace('\\', '/'):
                           hashlib.sha256(p.read_bytes().replace(b'\r\n', b'\n')).hexdigest() for p in inputs}
@@ -31,7 +32,8 @@ def main():
                     '--onefile', '--console', '--name', 'OpenWrt-Release-Index',
                     '--distpath', str(output), '--workpath', str(work/'objects'), '--specpath', str(work),
                     '--paths', str(modules), '--collect-all', 'dissect.extfs', '--hidden-import', 'subprocess',
-                    '--add-data', str(engine)+';.', '--icon', str(modules/'ui/src-tauri/icons/icon.ico'),
+                    *(item for name,path in ASSETS.items() for item in ('--add-data',str(path)+';'+str(Path(name).parent))),
+                    '--icon', str(modules/'ui/src-tauri/icons/icon.ico'),
                     str(source)], cwd=root, check=True)
     if fingerprint() != before:
         raise ValueError('Summary tool inputs changed during compilation')

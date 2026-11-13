@@ -177,6 +177,9 @@ def validate_manifest(m):
             raise ValueError('Invalid ' + k)
     if m['base_version'] == m['target_version']:
         raise ValueError('Release versions are identical')
+    if 'release_index' in m:
+        from baseline import validate_target
+        validate_target(m['release_index'], m)
     ops = m.get('operations')
     if not isinstance(ops, list) or not 0 <= len(ops) <= MAX_FILES or not ops and not m.get('boot'):
         raise ValueError('Empty or excessive OTA operations')
@@ -596,6 +599,8 @@ class Engine:
                     raise ValueError('Boot recovery backup checksum mismatch')
             native_restore(self.root, self.state/data['backup'], data.get('boot_companions', []))
             write_file(self.path(data['boot']), original, data['boot_family'])
+        from baseline import restore as restore_baseline
+        restore_baseline(self.state, self.state/data['backup'], data)
         previous = data.get('previous_identity')
         if previous:
             atomic_json(self.state / 'current.json', previous)
@@ -729,6 +734,9 @@ class Engine:
                             target_version=patch.manifest['target_version'])
                 if previous.get('backup'):
                     data['previous_transaction'] = {k:v for k,v in previous.items() if k != 'previous_transaction'}
+                if 'release_index' in patch.manifest:
+                    from baseline import backup as backup_baseline
+                    backup_baseline(self.state, backup, data)
                 # The large immutable plan is written once, not rewritten for every
                 # file. A compact count journal keeps update writes O(n), not O(n squared).
                 atomic_json(backup / 'plan.json', ops)
@@ -789,6 +797,8 @@ class Engine:
                                 version=patch.manifest['target_version'], kernel_release=kernel_release)
                 release_file = self.root/('etc/'+patch.manifest['family']+'/release.json')
                 if release_file.is_file(): identity['release_marker'] = hashlib.sha256(release_file.read_bytes()).hexdigest()
+                if 'release_index' in patch.manifest:
+                    atomic_json(self.state / 'baseline.json', patch.manifest['release_index'])
                 atomic_json(self.state / 'current.json', identity)
                 data['status'] = 'complete'
                 data.pop('previous_transaction', None)

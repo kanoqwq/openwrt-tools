@@ -13,11 +13,12 @@ from pathlib import Path, PurePosixPath
 import shutil
 import sys
 import zipfile
+from resources import ASSETS, asset
 
 TOP=Path(__file__).resolve().parent
 SUPPORT=('__init__.py','resources.py','host.py','ssh_runtime.py','mu300_update.py','native_boot.py','ota_engine.py','ota_package.py','release_index.py','ota_desktop.py',
-         'ota_bundle.py','ota_runtime.py','boot.py','rpc.py','proxy.sh','lz4raw-aarch64.so',
-         'errors.js','unisoc-ota.js','unisoc-ota.json')
+         'ota_bundle.py','ota_runtime.py',
+         *(n for n in ASSETS if n not in ('storage-e5.sh','storage-mu300.sh','release-index.py')))
 
 
 def digest(path):
@@ -93,15 +94,10 @@ def attach(package):
     owned.update(p.relative_to(package).as_posix() for p in (package/'OpenWrt-Diff-Studio.app').rglob('*') if p.is_file())
     shutil.copy2(TOP/'ota-tool.py',package/'OpenWrt-Diff-Studio.py')
     owned.add('OpenWrt-Diff-Studio.py');(package/'backend').mkdir()
-    plugin=TOP/'runtime/luci-app-unisoc-ota'
-    extras={'errors.js':plugin/'htdocs/luci-static/resources/unisoc-ota/errors.js',
-            'unisoc-ota.js':plugin/'htdocs/luci-static/resources/view/system/unisoc-ota.js',
-            'unisoc-ota.json':plugin/'root/usr/share/rpcd/acl.d/unisoc-ota.json',
-            'lz4raw-aarch64.so':TOP/'ota-native/lz4raw-aarch64.so',
-            'ota_engine.py':plugin/'root/usr/lib/unisoc-ota/engine.py'}
     for name in SUPPORT:
-        source=extras.get(name) or (plugin/'root/usr/lib/unisoc-ota'/name if name in ('boot.py','rpc.py','proxy.sh') else TOP/'backend'/name)
-        shutil.copy2(source,package/'backend'/name);owned.add('backend/'+name)
+        source=asset(name) if name in ASSETS else TOP/'backend'/name
+        target=package/'backend'/name;target.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copy2(source,target);owned.add('backend/'+name)
     # Both platforms use the already installed tools/ backend. Do not copy it
     # into a second tool directory, nor include unrelated ADB binaries.
     for platform,prefix in (('windows-x64','tools/backend/'),('macos-arm64','tools/macos/backend/')):

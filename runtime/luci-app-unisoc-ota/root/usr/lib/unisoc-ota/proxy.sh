@@ -3,7 +3,7 @@
 # Python or import the engine just to enumerate methods during a live update.
 # Keep this in sync with rpc.py METHODS (checked by test_ota_rpc.py).
 if [ "$#" -eq 1 ] && [ "$1" = list ]; then
-    printf '%s\n' '{"status":{},"inspect":{},"start":{"id":""},"rollback_check":{},"rollback":{},"discard_recovery":{},"reboot":{}}'
+    printf '%s\n' '{"status":{},"inspect":{},"start":{"id":""},"rollback_check":{},"rollback":{},"discard_recovery":{},"reboot":{},"build_status":{},"generate":{"mode":""},"inspect_generated":{},"start_generated":{"id":""}}'
     exit 0
 fi
 # During a transaction, RPC uses the isolated interpreter, never half-updated

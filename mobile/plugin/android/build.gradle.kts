@@ -54,12 +54,14 @@ val stageResources by tasks.registering(Sync::class) {
     from("../../../device/f2fs-online-arm64")
     from("../../../device/build.json") { into("online-helper") }
     from("../../../runtime/luci-app-unisoc-ota/root/usr/lib/unisoc-ota") {
-        include("engine.py", "boot.py", "rpc.py", "proxy.sh")
+        include("engine.py", "boot.py", "rpc.py", "proxy.sh", "uploads.py", "baseline.py", "builder.py", "generator/**")
+        exclude("**/__pycache__/**", "**/*.pyc")
     }
     from("../../../runtime/luci-app-unisoc-ota/htdocs/luci-static/resources/view/system/unisoc-ota.js")
     from("../../../runtime/luci-app-unisoc-ota/htdocs/luci-static/resources/unisoc-ota/errors.js")
     from("../../../runtime/luci-app-unisoc-ota/root/usr/share/rpcd/acl.d/unisoc-ota.json")
     from("../../../ota-native/lz4raw-aarch64.so")
+    from("../../../ota-native/build.json")
     from("../../../release-index.py")
     doLast {
         layout.buildDirectory.file("generated/assets/openwrt-runtime/mobile-build.json").get().asFile.writeText(installerBuildInfo.get())

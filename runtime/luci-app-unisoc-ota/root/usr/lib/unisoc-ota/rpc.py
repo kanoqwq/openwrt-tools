@@ -12,13 +12,15 @@ import time
 
 from engine import Engine, Patch, atomic_json, prepare_runtime
 from boot import arm_next_linux
+from uploads import copy_payload, ota_payload
 
 ROOT = os.environ.get('UNISOC_OTA_ROOT', '')
 ENGINE = str(Path(__file__).with_name('engine.py'))
 STATE = Path(ROOT+'/etc/unisoc-ota')
 UPLOAD = STATE / 'upload.ota'
 JOB = STATE / 'job.json'
-METHODS = {'status': {}, 'inspect': {}, 'start': {'id':''}, 'rollback_check': {}, 'rollback': {}, 'discard_recovery': {}, 'reboot': {}}
+METHODS = {'status': {}, 'inspect': {}, 'start': {'id':''}, 'rollback_check': {}, 'rollback': {}, 'discard_recovery': {}, 'reboot': {},
+           'build_status': {}, 'generate': {'mode':''}, 'inspect_generated': {}, 'start_generated': {'id':''}}
 
 
 def boot_id():
@@ -97,31 +99,20 @@ def activate_rpc():
         return {'status': 'warning', 'error': str(error)}
 
 
-def stage_upload(path, expected_id):
+def stage_upload(path, expected_id, consume=True):
     """Freeze the reviewed content once, under the inherited admission lock."""
     candidate = STATE / ('candidate-' + str(time.time_ns()) + '.ota')
     source = Path(path)
     before = source.stat()
-    if before.st_size > (2 << 30) or shutil.disk_usage(STATE).free < before.st_size + (16 << 20):
-        raise ValueError('Insufficient staging space or excessive upload size')
     try:
-        with source.open('rb') as src, candidate.open('xb') as dest:
-            remaining = before.st_size
-            while remaining:
-                block = src.read(min(1 << 20, remaining))
-                if not block:
-                    raise ValueError('Upload changed during staging')
-                dest.write(block)
-                remaining -= len(block)
-            dest.flush()
-            os.fsync(dest.fileno())
+        copy_payload(source, candidate)
         with Patch(candidate) as patch:
             if patch.id != expected_id:
                 raise ValueError('Upload differs from the patch you reviewed; inspect again')
         frozen = STATE / ('reviewed-' + expected_id + '.ota')
         os.replace(candidate, frozen)
         after = source.stat()
-        if (after.st_dev, after.st_ino, after.st_mtime_ns, after.st_size) == (before.st_dev, before.st_ino, before.st_mtime_ns, before.st_size):
+        if consume and (after.st_dev, after.st_ino, after.st_mtime_ns, after.st_size) == (before.st_dev, before.st_ino, before.st_mtime_ns, before.st_size):
             source.unlink()
         return frozen
     finally:
@@ -145,7 +136,7 @@ def prepare_apply(path, expected_id, lock_fd):
         atomic_json(JOB, dict(status='running', command='apply', patch_id=expected_id, phase=name))
     try:
         phase('staging')
-        frozen = stage_upload(path, expected_id)
+        frozen = stage_upload(path, expected_id, consume=Path(path).parent != STATE/'builder')
         phase('runtime')
         # A bind of /target excludes the host's tmpfs submount. Use PID 1's
         # real tmp directly, including on the very first desktop bootstrap.
@@ -233,12 +224,26 @@ def worker(command, path=None, expected_id=None):
     return {'status': 'running'}
 
 
-def dispatch(method, path=None, review_id=None):
+def dispatch(method, path=None, review_id=None, mode=None):
     STATE.mkdir(mode=0o700, exist_ok=True)
+    if method in ('build_status','generate','inspect_generated','start_generated'):
+        from builder import Builder
+        builder=Builder(ROOT or '/')
+        if method=='build_status': return builder.status()
+        if method=='generate': return builder.start(mode)
+        if method=='inspect_generated': return builder.inspect_generated()
+        if not isinstance(review_id,str) or not re.fullmatch(r'[a-f0-9]{64}',review_id):
+            raise ValueError('Inspect this patch before applying')
+        return worker('apply',str(builder.output),review_id)
     if method == 'status':
         result = Engine().status()
         result['job'] = json.loads(JOB.read_text()) if JOB.exists() else {'status': 'idle'}
-        if result['job']['status'] == 'complete':
+        generation=STATE/'builder/job.json'
+        try:
+            generating=generation.is_file() and json.loads(generation.read_text()).get('status')=='running'
+        except (OSError,ValueError):
+            generating=False
+        if result['job']['status'] == 'complete' and not generating:
             with (STATE/'job.lock').open('a') as lock:
                 try:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -266,7 +271,7 @@ def dispatch(method, path=None, review_id=None):
         result['reboot_required'] = (completed == current) if result['job']['status'] == 'complete' and completed and current else None
         return result
     if method == 'inspect':
-        with Patch(UPLOAD) as patch:
+        with ota_payload(UPLOAD) as payload, Patch(payload) as patch:
             return Engine().inspect(patch)
     if method == 'start':
         path = Path(path) if path else UPLOAD
@@ -345,8 +350,11 @@ def main():
         # transport metadata, not a method argument. ACLs are enforced by rpcd.
         args.pop('ubus_rpc_session', None)
         method, path = sys.argv[2], None
-        if method == 'start' and isinstance(args,dict) and set(args) == {'id'}:
+        if method in ('start','start_generated') and set(args) == {'id'}:
             review_id = args['id']
+        elif method == 'generate' and set(args) == {'mode'}:
+            print(json.dumps(dispatch(method,mode=args['mode'])))
+            return
         elif args:
             raise ValueError('Unexpected RPC arguments')
         else:

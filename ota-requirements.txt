@@ -1,2 +1,3 @@
-# Desktop read-only ext4 parser, never installed on the OpenWrt device.
+# Desktop parser. Device generator uses the pinned source-only archive produced
+# by tools/vendor-ota-extfs.py; no pip installation or host extensions on-device.
 dissect.extfs==3.15
