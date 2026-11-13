@@ -164,6 +164,48 @@ class RPCTests(unittest.TestCase):
                 fcntl.flock(held,fcntl.LOCK_EX|fcntl.LOCK_NB)
                 self.assertEqual(self.rpc.dispatch('status')['job']['status'],'complete')
 
+    def test_corrupt_generation_record_cannot_break_system_patch_status(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.rpc.STATE=Path(d);self.rpc.JOB=Path(d)/'job.json'
+            (Path(d)/'builder').mkdir()
+            for raw in ('{','null','[]','x'*70000):
+                (Path(d)/'builder/job.json').write_text(raw)
+                with patch.object(self.rpc,'Engine') as engine:
+                    engine.return_value.status.return_value={'identity':{'version':'r1'}}
+                    self.assertEqual(self.rpc.dispatch('status')['identity']['version'],'r1')
+
+    def test_corrupt_inspection_record_is_retryable_and_does_not_change_transactions(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.rpc.STATE=Path(d)
+            for raw in ('{','null','[]','{"status":"unknown"}','{"status":"running"}'):
+                (Path(d)/'inspection.json').write_text(raw)
+                result=self.rpc.inspection_status('a'*32)
+                self.assertEqual(result['status'],'failed');self.assertEqual(result['ticket'],'a'*32)
+                self.assertFalse((Path(d)/'job.json').exists());self.assertFalse((Path(d)/'journal.json').exists())
+
+    def test_inspection_lock_is_not_reported_as_another_update(self):
+        import fcntl
+        with tempfile.TemporaryDirectory() as d:
+            self.rpc.STATE=Path(d);self.rpc.JOB=Path(d)/'job.json'
+            self.rpc.JOB.write_text(json.dumps({'status':'complete'}))
+            (Path(d)/'inspection.json').write_text(json.dumps({'status':'running','ticket':'a'*32}))
+            with (Path(d)/'job.lock').open('a') as held,patch.object(self.rpc,'Engine') as engine:
+                engine.return_value.status.return_value={'identity':{'version':'r1'}}
+                fcntl.flock(held,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                self.assertEqual(self.rpc.dispatch('status')['job']['status'],'complete')
+
+    def test_corrupt_update_task_record_preserves_authoritative_pending_recovery(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.rpc.STATE=Path(d);self.rpc.JOB=Path(d)/'job.json'
+            for raw in ('{','null','[]','{"status":9}'):
+                self.rpc.JOB.write_text(raw)
+                with patch.object(self.rpc,'Engine') as engine:
+                    engine.return_value.status.return_value={'identity':{'version':'r1'},'transaction':{'status':'applying'},'recovery':{'pending':True}}
+                    value=self.rpc.dispatch('status')
+                    self.assertEqual(value['job']['status'],'failed');self.assertTrue(value['recovery']['pending'])
+                    self.assertEqual(value['transaction']['status'],'applying')
+                    self.assertEqual(self.rpc.JOB.read_text(),raw)
+
     def test_bootstrap_passes_review_id_for_generic_web_upload(self):
         with patch.object(sys,'argv',['rpc.py','start','/target/etc/unisoc-ota/upload.ota','b'*64]), \
              patch.object(self.rpc,'dispatch',return_value={}) as dispatch, redirect_stdout(io.StringIO()):

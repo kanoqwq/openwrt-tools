@@ -91,6 +91,85 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(result['job']['status'],'failed')
         self.assertEqual(self.builder.baseline.read_bytes(),saved)
 
+    def test_disposable_cache_corruption_cannot_disable_valid_baseline(self):
+        self.upload('old');self.run_job('baseline')
+        cache=self.builder.home/'baseline-status.json'
+        for raw in ('{','null','[]','{"value":null}','x'*70000):
+            cache.write_text(raw)
+            self.assertTrue(self.builder.baseline_status()['available'],raw[:30])
+        saved=json.loads(cache.read_text());saved['value']=None;cache.write_text(json.dumps(saved))
+        self.assertTrue(self.builder.baseline_status()['available'])
+        cache.unlink()
+        with patch('builder.atomic_json',side_effect=PermissionError('cache read only')):
+            self.assertTrue(self.builder.baseline_status()['available'])
+
+    def test_cached_baseline_does_not_hide_same_length_corruption_with_preserved_mtime(self):
+        self.upload('old');self.run_job('baseline')
+        self.assertTrue(self.builder.baseline_status()['available'])
+        stamp=self.builder.baseline.stat();raw=self.builder.baseline.read_bytes()
+        broken=raw.replace(b'"sha256":"',b'"sha256":"x',1)[:-1]
+        self.assertEqual(len(broken),len(raw))
+        self.builder.baseline.write_bytes(broken);os.utime(self.builder.baseline,ns=(stamp.st_atime_ns,stamp.st_mtime_ns))
+        result=self.builder.baseline_status();self.assertFalse(result['available']);self.assertEqual(result['reason'],'invalid')
+
+    def test_missing_corrupt_or_wrong_version_baseline_can_be_reinitialized(self):
+        for raw in (None,b'',b'null',b'{"format":"broken"}'):
+            with self.subTest(raw=raw):
+                if raw is None:self.builder.baseline.unlink(missing_ok=True)
+                else:self.builder.baseline.write_bytes(raw)
+                result=self.builder.status();self.assertFalse(result['baseline']['available'])
+                self.upload('old');result=self.run_job('baseline')
+                self.assertTrue(result['baseline']['available'],result)
+        value=json.loads(self.builder.baseline.read_text());value['release']['meta']['image_version']='mu300-other'
+        import hashlib
+        value['sha256']=hashlib.sha256(canonical(value['release'])).hexdigest()
+        atomic_json(self.builder.baseline,value)
+        self.assertEqual(self.builder.baseline_status()['reason'],'mismatch')
+        self.upload('old');self.assertTrue(self.run_job('baseline')['baseline']['available'])
+
+    def test_corrupt_task_record_does_not_block_new_task_or_upload_status(self):
+        for raw in ('{','null','[]','{"status":"unknown"}','x'*70000):
+            self.builder.job.write_text(raw);self.upload('old')
+            status=self.builder.status();self.assertEqual(status['job']['status'],'failed')
+            self.assertIn('old.zip',status['uploads'])
+            with patch('builder.subprocess.Popen'):
+                ack=self.builder.start('baseline')
+                self.assertEqual(ack['status'],'running')
+                self.assertEqual(len(ack['task_id']),32)
+            result=self.run_job('baseline');self.assertEqual(result['job']['status'],'complete',result)
+
+    def test_failed_generation_and_baseline_repair_keep_previous_download_and_review(self):
+        self.upload('old','new');good=self.run_job('pair')
+        original=self.builder.output.read_bytes()
+        self.upload('old');baseline=self.run_job('baseline')
+        self.assertTrue(baseline['download']);self.assertEqual(baseline['output']['id'],good['job']['id'])
+        self.assertEqual(self.builder.inspect_generated()['id'],good['job']['id'])
+        self.upload('new');(self.builder.home/'new.zip').write_bytes(b'bad upload')
+        failure=self.run_job('current')
+        self.assertEqual(failure['job']['status'],'failed');self.assertTrue(failure['download'])
+        self.assertEqual(failure['output']['base_version'],'mu300-r1')
+        self.assertEqual(self.builder.output.read_bytes(),original)
+        self.assertEqual(self.builder.inspect_generated()['id'],good['job']['id'])
+
+    def test_cleanup_only_removes_owned_interrupted_scratch_under_admission_lock(self):
+        owned=self.builder.home/'.build-owned';owned.mkdir()
+        atomic_json(owned/'owner.json',{'owner':'unisoc-ota-builder','task_id':'a'*32})
+        (owned/'partial.img').write_bytes(b'partial image')
+        unowned=self.builder.home/'.build-keep';unowned.mkdir();(unowned/'private').write_bytes(b'keep')
+        linked=self.builder.home/'.build-link';linked.symlink_to(unowned,target_is_directory=True)
+        with (self.builder.state/'job.lock').open('a') as held:
+            fcntl.flock(held,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            with self.assertRaises(BlockingIOError):self.builder.start('baseline')
+            self.assertTrue(owned.exists())
+        with self.assertRaisesRegex(ValueError,'required full'):self.builder.start('baseline')
+        self.assertFalse(owned.exists());self.assertEqual((unowned/'private').read_bytes(),b'keep');self.assertTrue(linked.is_symlink())
+
+    def test_each_admitted_task_has_distinct_identity(self):
+        self.upload('old')
+        with patch('builder.subprocess.Popen'):
+            first=self.builder.start('baseline');second=self.builder.start('baseline')
+        self.assertNotEqual(first['task_id'],second['task_id'])
+
     def test_apply_and_rollback_advance_and_restore_clean_baseline(self):
         self.upload('old','new');self.run_job('pair')
         before=self.builder.baseline.read_bytes()
@@ -132,12 +211,25 @@ class BuilderTests(unittest.TestCase):
     def test_failed_generation_retained_output_remains_deletable_and_stale_confirmation_is_rejected(self):
         self.builder.output.write_bytes(b'previous output')
         atomic_json(self.builder.job,{'status':'failed','error':'bad newer upload'})
-        ready=self.builder.status();self.assertFalse(ready['download']);self.assertTrue(ready['has_output'])
+        ready=self.builder.status();self.assertTrue(ready['download']);self.assertTrue(ready['has_output'])
         other=self.builder.home/'other';other.write_bytes(b'new output');os.replace(other,self.builder.output)
         with self.assertRaisesRegex(ValueError,'changed'):self.builder.discard_generated(ready['output_id'])
         self.assertEqual(self.builder.output.read_bytes(),b'new output')
         token=self.builder.status()['output_id'];self.builder.discard_generated(token)
         self.assertFalse(self.builder.output.exists())
+
+    def test_lost_result_metadata_keeps_download_and_full_readonly_verification(self):
+        self.upload('old','new');ready=self.run_job('pair')
+        self.builder.result.write_text('null');self.builder.job.write_text('{')
+        status=self.builder.status();self.assertTrue(status['download']);self.assertIsNone(status['output'])
+        self.assertEqual(self.builder.inspect_generated()['id'],ready['job']['id'])
+        atomic_json(self.builder.result,{'id':int('1'*64),'base_version':'mu300-r1','target_version':'mu300-r2',
+                                        'output_id':self.builder.status()['output_id']})
+        self.assertIsNone(self.builder.output_summary())
+        self.assertEqual(self.builder.inspect_generated()['id'],ready['job']['id'])
+        self.assertEqual((self.root/'usr/lib/test').read_bytes(),b'old')
+        self.builder.output.write_bytes(b'incomplete archive')
+        with self.assertRaises(zipfile.BadZipFile):self.builder.inspect_generated()
 
     def test_delete_does_not_follow_output_symlink(self):
         target=self.folder/'private';target.write_bytes(b'keep')

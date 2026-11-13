@@ -85,6 +85,7 @@ return view.extend({
         var discard=action(tr('删除恢复副本','Delete recovery copy','Kurtarma kopyasını sil'),'trash','warn');
         var reboot=action(tr('重启设备','Reboot','Yeniden başlat'),'power');
         var buildState=loaded[2]||{job:{status:'idle'},baseline:{available:false}}, buildBusy=false, buildTick=null, shownBuild=null;
+        var forceBaseline=false, baselineTask=null, uncertainBuild=null, buildRefreshing=false;
         var busy=false, watching=false, pollError=false, rebooting=false, disposed=false, pollTick, last=state, localPhase=null, pendingAction=null, pendingError=null;
         var initialRetries=state.load_error?15:0, notice=null, inspectionTick=null, inspectionDone=null;
         var workingTitle=E('strong'), workingDetail=E('p',{class:'mud-note'});
@@ -118,6 +119,7 @@ return view.extend({
         function failed(e){if(!disposed){clearNotice();notice=ui.addNotification(null,errorNode(e),'error');}}
         function cancelledUpload(e){var text=String(e&&e.message||e||'');return text==='Upload has been cancelled'||typeof _==='function'&&text===_('Upload has been cancelled');}
         function controls(){
+            if(disposed)return;
             var info=last.recovery||{}, writable=!busy&&!buildBusy&&!rebooting&&!info.pending&&L.hasViewPermission();
             button.disabled=!writable;
             rollback.disabled=!writable||!(info.available===true||(!last.recovery&&last.transaction&&last.transaction.status==='complete'));
@@ -239,10 +241,21 @@ return view.extend({
                 poll.add(inspectionTick,2);inspectionTick();
             });
         }
+        function beginInspection(source){
+            return callInspectStatus('').then(error).then(function(previous){
+                return callInspectBegin(source).then(error).catch(function(e){
+                    if(e.otaBackend||!messages.isConnectionError(e))throw e;
+                    return callInspectStatus('').then(error).then(function(current){
+                        if(current&&current.ticket&&current.ticket!==(previous||{}).ticket&&current.source===source)return current;
+                        throw e;
+                    });
+                });
+            });
+        }
         function inspectPatch(generated,existing){
             if(disposed)return Promise.resolve();
             phase('checking');
-            return (existing?Promise.resolve(existing):callInspectBegin(generated?'generated':'upload')).then(waitInspection).then(function(r){
+            return (existing?Promise.resolve(existing):beginInspection(generated?'generated':'upload')).then(waitInspection).then(function(r){
                 if(disposed)return;
                 phase(null);error(r);var m=r.manifest;
                 if(!m||typeof r.id!=='string'||!/^[a-f0-9]{64}$/.test(r.id))throw new Error('Incomplete patch inspection response');
@@ -300,6 +313,9 @@ return view.extend({
         var newUpload=action(tr('上传新版完整 ZIP','Upload new full ZIP','Yeni tam ZIP yükle'),'upload');
         var currentUpload=action(tr('导入当前版本完整 ZIP','Import current full ZIP','Mevcut tam ZIP dosyasını içe aktar'),'upload');
         var baselineSave=action(tr('保存当前版本基准','Save current baseline','Mevcut temel sürümü kaydet'),'history');
+        var baselineRepair=action(tr('重新初始化基准','Reinitialize baseline','Temel sürümü yeniden başlat'),'recovery');
+        var baselineCancel=action(tr('取消重建基准','Cancel baseline repair','Temel sürüm onarımını iptal et'),'history');
+        var buildRefresh=action(tr('刷新生成状态','Refresh generation status','Oluşturma durumunu yenile'),'recovery');
         var generate=action(tr('生成 .ota','Generate .ota','.ota oluştur'),'history','mud-ota-primary');
         var resultButton=action(tr('查看生成结果','View generated patch','Oluşturulan yamayı göster'),'history');
         var deleteGenerated=action(tr('删除生成包','Delete generated patch','Oluşturulan yamayı sil'),'trash','warn');
@@ -312,7 +328,7 @@ return view.extend({
         var oldSize=E('code'),currentSize=E('code'),newSize=E('code'),baselineNote=E('p',{class:'mud-note mud-ota-build-baseline'});
         var oldRow=E('div',{class:'mud-ota-build-upload',id:'ota-old-release'},[oldUpload,oldSize]);
         var baselinePanel=E('div',{class:'mud-ota-baseline-setup',id:'ota-baseline-setup'},[
-            E('div',{class:'mud-ota-baseline-title'},tr('首次初始化当前版本基准','Initialize current baseline','Mevcut temel sürümü başlat')),
+            E('div',{class:'mud-ota-baseline-title'},tr('初始化或修复版本基准','Initialize or repair baseline','Temel sürümü başlat veya onar')),
             E('p',{class:'mud-note'},tr('导入与本机当前版本对应的完整 ZIP，只需初始化一次；后续更新会自动维护原始基准。','Import the full ZIP matching the current version once. Subsequent updates maintain the clean baseline automatically.','Mevcut sürümün tam ZIP dosyasını bir kez içe aktarın. Sonraki güncellemeler temiz temel sürümü otomatik korur.')),
             E('div',{class:'mud-ota-build-upload'},[currentUpload,currentSize,baselineSave])]);
         function stopBuildWatch(){if(buildTick)poll.remove(buildTick);buildTick=null;}
@@ -321,10 +337,13 @@ return view.extend({
             var ready=(buildState.baseline||{}).available===true,uploads=buildState.uploads||{};
             var locked=busy||buildBusy||rebooting||!L.hasViewPermission()||(last.recovery||{}).pending||!!buildState.load_error;
             var pair=buildMode.value==='pair';
-            oldRow.hidden=!pair;baselinePanel.hidden=pair||ready;baselineNote.hidden=pair;
+            oldRow.hidden=!pair;baselinePanel.hidden=pair||(ready&&!forceBaseline);baselineNote.hidden=pair;
+            baselineRepair.hidden=pair||!ready||forceBaseline;baselineRepair.disabled=locked;
+            baselineCancel.hidden=pair||!ready||!forceBaseline;baselineCancel.disabled=locked;
+            buildRefresh.disabled=buildRefreshing||rebooting;
             buildMode.disabled=locked;oldUpload.disabled=locked;newUpload.disabled=locked;currentUpload.disabled=locked;
             baselineSave.disabled=locked||!uploads['old.zip'];
-            generate.disabled=locked||!uploads['new.zip']||!(pair?uploads['old.zip']:ready);
+            generate.disabled=locked||!uploads['new.zip']||!(pair?uploads['old.zip']:ready&&!forceBaseline);
             resultButton.hidden=!buildState.download;resultButton.disabled=locked;
             deleteGenerated.hidden=!buildState.has_output;deleteGenerated.disabled=locked||!buildState.output_id;
             outputNote.hidden=!buildState.has_output;
@@ -332,13 +351,26 @@ return view.extend({
             oldSize.textContent=uploads['old.zip']?bytes(uploads['old.zip']):tr('未上传','Not uploaded','Yüklenmedi');
             currentSize.textContent=oldSize.textContent;
             newSize.textContent=uploads['new.zip']?bytes(uploads['new.zip']):tr('未上传','Not uploaded','Yüklenmedi');
+            var reason=(buildState.baseline||{}).reason;
             baselineNote.textContent=ready?tr('原始版本基准：','Clean release baseline: ','Temiz sürüm temeli: ')+(buildState.baseline.version||''):
-                tr('尚未保存原始版本基准，请先完成下方的首次初始化。','No clean baseline saved yet. Complete the one-time initialization below.','Temiz temel sürüm henüz kaydedilmedi. Aşağıdaki ilk kurulumu tamamlayın.');
+                reason==='mismatch'?tr('基准与当前版本不匹配，请导入当前版本完整 ZIP 重新初始化。','The baseline does not match this version. Import the current full ZIP to reinitialize it.','Temel sürüm mevcut sürümle eşleşmiyor. Yeniden başlatmak için mevcut tam ZIP dosyasını içe aktarın.'):
+                reason==='invalid'?tr('原始版本基准已损坏或无法读取，请导入当前版本完整 ZIP 修复。','The baseline is damaged or unreadable. Import the current full ZIP to repair it.','Temel sürüm bozuk veya okunamıyor. Onarmak için mevcut tam ZIP dosyasını içe aktarın.'):
+                tr('原始版本基准缺失，请导入当前版本完整 ZIP 初始化。','The baseline is missing. Import the current full ZIP to initialize it.','Temel sürüm eksik. Başlatmak için mevcut tam ZIP dosyasını içe aktarın.');
         }
         buildMode.onchange=buildControls;
+        baselineRepair.onclick=function(){if(busy||buildBusy||baselineRepair.disabled)return;forceBaseline=true;buildControls();};
+        baselineCancel.onclick=function(){if(busy||buildBusy||baselineCancel.disabled)return;forceBaseline=false;buildControls();};
+        buildRefresh.onclick=function(){
+            if(buildRefreshing||disposed)return Promise.resolve();
+            clearNotice();buildRefreshing=true;controls();
+            return callBuildStatus().then(function(value){paintBuild(value,false);}).catch(function(e){
+                buildState=Object.assign({},buildState,{load_error:e});controls();failed(e);
+            }).finally(function(){buildRefreshing=false;controls();});
+        };
         function downloadGenerated(){
             if(!buildState.download)return;
-            var job=buildState.job||{},name=('OpenWrt-patch-'+job.base_version+'-to-'+job.target_version).replace(/[^a-zA-Z0-9._+-]/g,'_').slice(0,220)+'.ota';
+            var job=buildState.output||buildState.job||{},name=job.base_version&&job.target_version?
+                ('OpenWrt-patch-'+job.base_version+'-to-'+job.target_version).replace(/[^a-zA-Z0-9._+-]/g,'_').slice(0,220)+'.ota':'OpenWrt-generated-patch.ota';
             var form=E('form',{method:'post',action:L.env.cgi_base+'/cgi-download',enctype:'application/x-www-form-urlencoded',style:'display:none'},[
                 E('input',{type:'hidden',name:'sessionid',value:rpc.getSessionID()}),
                 E('input',{type:'hidden',name:'path',value:'/etc/unisoc-ota/builder/update.ota'}),
@@ -346,13 +378,14 @@ return view.extend({
             document.body.appendChild(form);form.submit();form.remove();
         }
         function generatedModal(){
-            var job=buildState.job||{};
+            var job=buildState.output||buildState.job||{};
             if(disposed||!buildState.download)return;
-            shownBuild=job.id;
-            ui.showModal(tr('差分包已生成，是否刷入？','Patch ready. Apply it now?','Yama hazır. Şimdi uygulansın mı?'),[
+            var known=job.base_version&&job.target_version;
+            shownBuild=job.task_id||job.id;
+            ui.showModal(known?tr('差分包已生成，是否刷入？','Patch ready. Apply it now?','Yama hazır. Şimdi uygulansın mı?'):tr('保留的差分包','Retained patch','Saklanan yama'),[
                 E('div',{class:'mud mud-ota-modal'},[
-                    E('p',{},job.base_version+' → '+job.target_version),
-                    E('p',{},(job.files||0)+tr(' 个文件变更 · ',' file changes · ',' dosya değişikliği · ')+bytes(job.bytes)),
+                    E('p',{},known?job.base_version+' → '+job.target_version:tr('生成包信息缺失。可以下载或重新校验，校验通过并确认后才会刷入。','Patch metadata is missing. Download it or inspect it again; applying still requires successful checks and confirmation.','Yama bilgileri eksik. İndirin veya yeniden kontrol edin; uygulama için başarılı kontroller ve onay gerekir.')),
+                    E('p',{},known?(job.files||0)+tr(' 个文件变更 · ',' file changes · ',' dosya değişikliği · ')+bytes(job.bytes):bytes(buildState.output_bytes)),
                     E('p',{class:'mud-note'},tr('生成未改动系统。刷入前将继续检查兼容性并请你确认。','Generation has not changed the system. Applying requires compatibility checks and your confirmation.','Oluşturma sistemi değiştirmedi. Uygulamak için uyumluluk kontrolü ve onayınız gerekir.')),
                     E('div',{class:'mud-ota-modal-actions'},[
                         E('button',{type:'button',class:'mud-btn',click:function(){ui.hideModal();}},tr('稍后处理','Later','Daha sonra')),
@@ -371,14 +404,23 @@ return view.extend({
                 E('p',{class:'mud-note'},tr('只删除生成的 .ota。版本基准、恢复副本、已上传的固件和系统配置均保留；需要时可以重新生成。','Only the generated .ota is deleted. The baseline, recovery copy, uploaded firmware and system settings are kept. You can generate it again.','Yalnızca oluşturulan .ota silinir. Temel sürüm, kurtarma kopyası, yüklenen ürün yazılımı ve sistem ayarları korunur. Yeniden oluşturabilirsiniz.'))]),tr('删除生成包','Delete generated patch','Oluşturulan yamayı sil'),function(){
                     if(busy||buildBusy||!L.hasViewPermission())return;
                     clearNotice();buildBusy=true;controls();
-                    return callDiscardGenerated(expected).then(error).then(function(r){paintBuild(r,false);}).catch(function(e){
-                        return callBuildStatus().then(function(r){paintBuild(r,false);failed(e);}).catch(function(){buildBusy=false;controls();failed(e);});
+                    return callDiscardGenerated(expected).then(error).then(function(r){paintBuild(r,false);show(last);}).catch(function(e){
+                        return callBuildStatus().then(function(r){paintBuild(r,false);show(last);if(r.has_output||!messages.isConnectionError(e))failed(e);}).catch(function(){buildBusy=false;show(last);failed(e);});
                     });
                 },true);
         };
         function paintBuild(value,notify,awaitingAck){
             if(disposed)return;
             error(value);buildState=value;var job=value.job||{};
+            if(uncertainBuild){
+                var fresh=job.task_id?job.task_id!==uncertainBuild.before&&job.mode===uncertainBuild.mode:
+                    job.status==='running'&&job.mode===uncertainBuild.mode;
+                if(fresh){if(job.mode==='baseline')baselineTask=job.task_id||true;uncertainBuild=null;notify=true;}
+                else if(job.status!=='running'){var lost=uncertainBuild.error;uncertainBuild=null;notify=false;failed(lost);}
+            }
+            if(baselineTask&&job.mode==='baseline'&&job.status==='complete'&&(baselineTask===true||baselineTask===job.task_id)){
+                forceBaseline=false;baselineTask=null;
+            }
             buildBusy=job.status==='running';
             var buildPhase=({queued:tr('正在准备任务','Preparing task','Görev hazırlanıyor'),open:tr('正在读取固件包','Opening firmware ZIP','Ürün yazılımı ZIP dosyası açılıyor'),verify:tr('正在校验固件文件','Verifying firmware files','Ürün yazılımı doğrulanıyor'),unpack:tr('正在解压系统镜像','Decompressing system image','Sistem görüntüsü açılıyor'),index:tr('正在分析固件文件','Analyzing firmware files','Ürün yazılımı dosyaları inceleniyor'),compare:tr('正在比较版本差异','Comparing releases','Sürümler karşılaştırılıyor'),write:tr('正在写入差分包','Writing patch archive','Yama arşivi yazılıyor'),validate:tr('正在校验差分包','Verifying patch archive','Yama arşivi doğrulanıyor'),save:tr('正在保存版本基准','Saving clean baseline','Temiz temel sürüm kaydediliyor')})[job.phase]||tr('正在准备生成','Preparing generation','Oluşturma hazırlanıyor');
             buildProgress.hidden=!buildBusy;
@@ -400,7 +442,8 @@ return view.extend({
                 tr('选择完整固件 ZIP，生成可直接使用的 .ota。','Select full firmware ZIP files to generate a directly usable .ota.','Tam ZIP dosyalarını seçerek doğrudan kullanılabilir .ota oluşturun.');
             controls();
             if(!buildBusy&&!localPhase&&!rebooting&&value.download&&notify)show(last);
-            if(buildBusy){if(!awaitingAck)watchBuild();}else{stopBuildWatch();if(notify&&value.download&&shownBuild!==job.id)generatedModal();}
+            var output=value.output||job;
+            if(buildBusy){if(!awaitingAck)watchBuild();}else{stopBuildWatch();if(notify&&job.status==='complete'&&job.mode!=='baseline'&&value.download&&shownBuild!==(output.task_id||output.id))generatedModal();}
         }
         function watchBuild(){
             if(buildTick||disposed)return;
@@ -415,21 +458,34 @@ return view.extend({
             clearNotice();buildBusy=true;controls();
             return ui.uploadFile('/etc/unisoc-ota/builder/'+name,target).then(function(){
                 return callBuildStatus();
-            }).then(function(r){paintBuild(r,false);}).catch(function(e){buildBusy=false;controls();if(!cancelledUpload(e))failed(e);});
+            }).then(function(r){paintBuild(r,false);}).catch(function(e){
+                buildBusy=false;controls();
+                return callBuildStatus().then(function(r){paintBuild(r,false);if(!cancelledUpload(e))failed(e);}).catch(function(statusError){
+                    buildState=Object.assign({},buildState,{load_error:statusError});controls();if(!cancelledUpload(e))failed(e);
+                });
+            });
         }
         oldUpload.onclick=function(){return uploadFull('old.zip',oldUpload);};
         currentUpload.onclick=function(){return uploadFull('old.zip',currentUpload);};
         newUpload.onclick=function(){return uploadFull('new.zip',newUpload);};
         function beginBuild(mode){
             if(busy||buildBusy)return Promise.resolve();
+            var before=(buildState.job||{}).task_id;
             clearNotice();buildBusy=true;controls();
             paintBuild(Object.assign({},buildState,{job:{status:'running',mode:mode,phase:'queued'},download:false}),false,true);
             return callGenerate(mode).then(error).then(function(job){
+                if(mode==='baseline')baselineTask=job.task_id||true;
                 paintBuild(Object.assign({},buildState,{job:job,download:false}),false);watchBuild();
             }).catch(function(e){
                 // A lost acknowledgement must query the detached task before
                 // unlocking controls or deciding that generation failed.
-                return callBuildStatus().then(function(r){paintBuild(r,true);if(!buildBusy&&!(r.job||{}).id)failed(e);}).catch(function(){watchBuild();});
+                if(!e.otaBackend&&messages.isConnectionError(e)){
+                    uncertainBuild={before:before,mode:mode,error:e};
+                    return callBuildStatus().then(function(r){paintBuild(r,true);}).catch(function(){watchBuild();});
+                }
+                return callBuildStatus().then(function(r){paintBuild(r,false);failed(e);}).catch(function(statusError){
+                    buildBusy=false;buildState=Object.assign({},buildState,{load_error:statusError});controls();failed(e);
+                });
             });
         }
         generate.onclick=function(){return beginBuild(buildMode.value);};
@@ -438,8 +494,8 @@ return view.extend({
             E('div',{class:'mud-ota-card-head'},[icon('history'),E('h3',{},tr('生成差分包','Generate differential patch','Fark yaması oluştur'))]),
             E('p',{class:'mud-note'},tr('两种方式都基于完整固件的原始文件摘要，保留现有配置、插件和数据。生成完成后可选择是否刷入。','Both modes compare clean release indexes and preserve your settings, plugins and data. Choose whether to apply after generation.','Her iki yöntem temiz sürümleri karşılaştırır; ayarlar, eklentiler ve veriler korunur. Oluşturduktan sonra uygulamayı seçebilirsiniz.')),
             E('div',{class:'mud-ota-build-fields'},[E('label',{for:'ota-build-mode'},tr('生成方式','Source','Kaynak')),buildMode]),
-            baselineNote,baselinePanel,oldRow,E('div',{class:'mud-ota-build-fields mud-ota-build-upload'},[newUpload,newSize]),
-            E('div',{class:'mud-ota-actions'},[generate,resultButton,deleteGenerated]),outputNote,buildDetail,buildProgress]);
+            baselineNote,E('div',{class:'mud-ota-actions'},[baselineRepair,baselineCancel]),baselinePanel,oldRow,E('div',{class:'mud-ota-build-fields mud-ota-build-upload'},[newUpload,newSize]),
+            E('div',{class:'mud-ota-actions'},[generate,resultButton,deleteGenerated,buildRefresh]),outputNote,buildDetail,buildProgress]);
         paintBuild(buildState,false);
         if(state.load_error){if(interrupted(state.load_error)){phase('reconnecting');watch();}else{initialRetries=0;failed(state.load_error);}}else show(state);
         if(loaded[3]&&loaded[3].status==='running'&&!state.load_error)inspectPatch(loaded[3].source==='generated',loaded[3]);

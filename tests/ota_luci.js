@@ -17,13 +17,13 @@ function fixture(write=true, initial=idle(), locale="en", initialBuild={job:{sta
         state.calls.push(method);
         state.arguments.push([method,args]);
         if(method==='status')return state.statusError?Promise.reject(Error(state.statusError)):state.rejectStatus?Promise.reject(Error('offline')):Promise.resolve(state.status);
-        if(method==='inspect_begin'&&state.rejectInspect)return Promise.reject(Error(state.rejectInspect));
+        if(method==='inspect_begin'&&state.rejectInspect){if(state.onInspectBegin)state.onInspectBegin();return Promise.reject(Error(state.rejectInspect));}
         if(method==='inspect_begin')return (state.inspectPromise||Promise.resolve(state.inspection||{id:'a'.repeat(64),applicable:true,manifest:{base_version:'r1',target_version:'r2',operations:[]}})).then(result=>state.inspectionJob||{status:'complete',ticket:'c'.repeat(32),result});
         if(method==='inspect_status')return state.inspectionError?Promise.reject(Error(state.inspectionError)):Promise.resolve(state.inspectionJob||{status:'idle'});
         if(method==='build_status')return state.buildError?Promise.reject(Error(state.buildError)):Promise.resolve(state.buildStatus);
-        if(method==='generate')return state.generateError?Promise.reject(Error(state.generateError)):Promise.resolve({status:'running',mode:args[0],phase:'queued'});
+        if(method==='generate')return state.generateError?Promise.reject(Error(state.generateError)):state.generatePromise||Promise.resolve(state.generateAck||{status:'running',mode:args[0],phase:'queued'});
         if(method==='discard_generated'){
-            if(state.deleteGeneratedError)return Promise.reject(Error(state.deleteGeneratedError));
+            if(state.deleteGeneratedError){if(state.onDeleteGenerated)state.onDeleteGenerated();return Promise.reject(Error(state.deleteGeneratedError));}
             state.buildStatus={...state.buildStatus,has_output:false,output_bytes:0,output_id:null,download:false};
             return Promise.resolve(state.buildStatus);
         }
@@ -273,6 +273,67 @@ async function main(){
         assert(page.node('ota-old-release').hidden);assert.equal(page.node('ota-baseline-setup').hidden,ready);
         assert.equal(page.node('ota-baseline-setup').tag,'div');
     }
+    for(const reason of ['missing','invalid','mismatch']){
+        for(const locale of ['zh','en','tr']){
+            const page=fixture(true,idle(),locale,{job:{status:'idle'},baseline:{available:false,reason},uploads:{}});
+            assert(!page.node('ota-baseline-setup').hidden,reason+' hid the repair input');
+            const importLabel=locale==='zh'?'导入当前版本完整 ZIP':locale==='en'?'Import current full ZIP':'Mevcut tam ZIP dosyasını içe aktar';
+            assert(!page.button(importLabel).disabled,reason+' disabled the repair upload');
+        }
+    }
+    const repair=fixture(true,idle(),'en',{job:{status:'idle'},baseline:{available:true,version:'r1'},uploads:{'new.zip':30}});
+    assert(repair.node('ota-baseline-setup').hidden);
+    repair.button('Reinitialize baseline').onclick();
+    assert(!repair.node('ota-baseline-setup').hidden,'Valid cached baseline had no manual repair escape');
+    assert(repair.button('Generate .ota').disabled);
+    repair.button('Cancel baseline repair').onclick();
+    assert(repair.node('ota-baseline-setup').hidden);assert(!repair.button('Generate .ota').disabled);
+    assert(!repair.calls.includes('generate'),'Canceling reinitialization wrote data');
+    repair.button('Reinitialize baseline').onclick();
+    repair.buildStatus={job:{status:'idle'},baseline:{available:true,version:'r1'},uploads:{'old.zip':20,'new.zip':30}};
+    await repair.button('Import current full ZIP').onclick();await repair.button('Save current baseline').onclick();
+    repair.buildStatus={job:{status:'complete',mode:'baseline'},baseline:{available:true,version:'r1'},uploads:{'new.zip':30}};
+    for(const tick of [...repair.ticks])await tick();
+    assert(repair.node('ota-baseline-setup').hidden);assert(!repair.button('Generate .ota').disabled);
+    const unavailable=fixture(true,idle(),'en',{load_error:Error('temporary outage'),job:{status:'idle'},baseline:{available:false},uploads:{}});
+    assert(unavailable.button('Import current full ZIP').disabled);
+    assert(!unavailable.button('Refresh generation status').disabled,'No recovery from initial status failure');
+    unavailable.buildStatus={job:{status:'idle'},baseline:{available:false,reason:'invalid'},uploads:{}};
+    await unavailable.button('Refresh generation status').onclick();
+    assert(!unavailable.button('Import current full ZIP').disabled);assert(!unavailable.node('ota-baseline-setup').hidden);
+    unavailable.buildError='temporary status failure';await unavailable.button('Refresh generation status').onclick();assert.equal(unavailable.notifications.length,1);
+    unavailable.buildError=null;await unavailable.button('Refresh generation status').onclick();assert.equal(unavailable.notifications.length,0,'Recovered status retained stale error');
+    const previous={status:'complete',mode:'current',task_id:'old-task',id:'a'.repeat(64),base_version:'r1',target_version:'r2',files:3};
+    const rejected=fixture(true,idle(),'en',{job:previous,output:previous,download:true,baseline:{available:true,version:'r1'},uploads:{'new.zip':30}});
+    rejected.generateError='Import the current version full ZIP once to establish its clean baseline';
+    rejected.buildStatus={job:previous,output:previous,download:true,baseline:{available:false,reason:'missing'},uploads:{'new.zip':30}};
+    await rejected.button('Generate .ota').onclick();
+    assert.equal(rejected.notifications.length,1,'Old success swallowed a new generation failure');
+    assert(!rejected.modalButton('Check and apply'),'Rejected generation offered the previous patch as a new result');
+    assert(!rejected.node('ota-baseline-setup').hidden,'Deleted baseline never exposed the reimport input');
+    assert.equal(rejected.ticks.size,0);
+    const ackLost=fixture(true,idle(),'en',{job:previous,baseline:{available:true},uploads:{'new.zip':30}});
+    ackLost.generateError='XHR request timed out';ackLost.buildStatus={job:{status:'running',mode:'current',task_id:'new-task'},baseline:{available:true},uploads:{}};
+    await ackLost.button('Generate .ota').onclick();assert(ackLost.button('Import patch').disabled);assert.equal(ackLost.notifications.length,0);
+    ackLost.buildStatus={job:{...previous,task_id:'new-task'},output:{...previous,task_id:'new-task'},download:true,baseline:{available:true},uploads:{}};
+    for(const tick of [...ackLost.ticks])await tick();assert(ackLost.modalButton('Check and apply'));assert.equal(ackLost.ticks.size,0);
+    const noAckJob=fixture(true,idle(),'en',{job:previous,baseline:{available:true},uploads:{'new.zip':30}});
+    noAckJob.generateError='XHR request timed out';noAckJob.buildStatus={job:previous,output:previous,download:true,baseline:{available:true},uploads:{}};
+    await noAckJob.button('Generate .ota').onclick();assert.equal(noAckJob.notifications.length,1);assert.equal(noAckJob.modal.length,0);assert.equal(noAckJob.ticks.size,0);
+    const kept=fixture(true,idle(),'en',{job:{status:'failed',mode:'current',error:'bad newer package'},output:previous,download:true,baseline:{available:true},uploads:{}});
+    kept.button('View generated patch').onclick();kept.modalButton('Download .ota').click();
+    assert(kept.downloads[0].children.some(n=>n.name==='filename'&&n.value==='OpenWrt-patch-r1-to-r2.ota'),'Retained download used failed-task version metadata');
+    const unknownOutput=fixture(true,idle(),'en',{job:{status:'failed'},output:null,download:true,has_output:true,output_id:'b'.repeat(64),output_bytes:900,baseline:{available:true},uploads:{}});
+    unknownOutput.button('View generated patch').onclick();assert.equal(unknownOutput.modalTitle,'Retained patch');
+    unknownOutput.modalButton('Download .ota').click();assert(unknownOutput.downloads[0].children.some(n=>n.name==='filename'&&n.value==='OpenWrt-generated-patch.ota'));
+    assert(!unknownOutput.calls.includes('start_generated'));
+    const inspectAckLost=fixture();inspectAckLost.rejectInspect='XHR request timed out';
+    inspectAckLost.onInspectBegin=()=>{inspectAckLost.inspectionJob={status:'complete',ticket:'d'.repeat(32),source:'upload',result:{id:'a'.repeat(64),applicable:true,manifest:{base_version:'r1',target_version:'r2',operations:[]}}};};
+    await inspectAckLost.button('Import patch').onclick();assert(inspectAckLost.modalButton('Apply patch'));assert.equal(inspectAckLost.notifications.length,0);
+    assert(!inspectAckLost.calls.includes('start'),'Lost inspection acknowledgement skipped review');
+    const unchangedInspection=fixture();unchangedInspection.rejectInspect='XHR request timed out';
+    unchangedInspection.inspectionJob={status:'complete',ticket:'d'.repeat(32),source:'upload',result:{id:'a'.repeat(64),applicable:true,manifest:{base_version:'r1',target_version:'r2',operations:[]}}};
+    await unchangedInspection.button('Import patch').onclick();assert.equal(unchangedInspection.notifications.length,1);assert.equal(unchangedInspection.modal.length,0);
     assert.match(source,/\.mud-ota \[hidden\]\{display:none!important\}/,'Theme flex rules must not override hidden controls');
     for(const [locale,labels] of [['en',['Import patch','Upload new full ZIP']],['zh',['导入差异包','上传新版完整 ZIP']],['tr',['Yama içe aktar','Yeni tam ZIP yükle']]]){
         const page=fixture(true,idle(),locale);
@@ -352,6 +413,10 @@ async function main(){
     const failedDelete=fixture(true,idle(),'en',{...output});failedDelete.deleteGeneratedError='Generated patch changed; refresh before deleting it';
     failedDelete.button('Delete generated patch').onclick();await failedDelete.modalButton('Delete generated patch').click();
     assert(!failedDelete.button('Delete generated patch').hidden);assert(!failedDelete.button('Delete generated patch').disabled);assert.equal(failedDelete.notifications.length,1);
+    const deleteAckLost=fixture(true,idle(),'en',{...output});deleteAckLost.deleteGeneratedError='XHR request timed out';
+    deleteAckLost.onDeleteGenerated=()=>{deleteAckLost.buildStatus={...deleteAckLost.buildStatus,has_output:false,download:false,output_id:null,output_bytes:0};};
+    deleteAckLost.button('Delete generated patch').onclick();await deleteAckLost.modalButton('Delete generated patch').click();
+    assert(deleteAckLost.button('Delete generated patch').hidden);assert.equal(deleteAckLost.notifications.length,0,'Successful deletion with lost acknowledgement was reported as failed');
     assert.equal(fixture().ticks.size,0,'Idle page kept polling');
     console.log('PASS LuCI update recovery, ZIP import, both generators, result modal, download, explicit review/apply, permissions and no idle polling');
 }

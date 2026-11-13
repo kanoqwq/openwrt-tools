@@ -50,7 +50,14 @@ def inspection_status(ticket=''):
     if not isinstance(ticket, str) or ticket and not re.fullmatch(r'[a-f0-9]{32}', ticket):
         raise ValueError('Invalid inspection ticket')
     record = STATE/'inspection.json'
-    value = json.loads(record.read_text()) if record.exists() else {'status':'idle'}
+    from builder import read_record
+    try:
+        value = read_record(record,1<<20) if record.exists() else {'status':'idle'}
+        if (value.get('status') not in ('idle','running','complete','failed') or
+                value.get('status')!='idle' and not re.fullmatch(r'[a-f0-9]{32}',str(value.get('ticket','')))):
+            raise ValueError('Invalid inspection record')
+    except (OSError,ValueError):
+        return {'status':'failed','ticket':ticket,'error':'Inspection record is damaged; inspect this patch again'}
     if ticket and value.get('ticket') != ticket:
         raise ValueError('Inspection was replaced; inspect this patch again')
     if value.get('status') == 'running':
@@ -78,10 +85,9 @@ def begin_inspection(source):
             raise ValueError('Upload or generate a patch before inspecting it')
         expected = None
         if source == 'generated':
-            job = json.loads((STATE/'builder/job.json').read_text())
-            if job.get('status') != 'complete' or not re.fullmatch(r'[a-f0-9]{64}', job.get('id','')):
-                raise ValueError('Generate a patch before inspecting it')
-            expected = job['id']
+            from builder import Builder
+            job = Builder(ROOT or '/').output_summary()
+            expected = job['id'] if job else None
         ticket = os.urandom(16).hex()
         value = dict(status='running', ticket=ticket, source=source, phase='queued')
         atomic_json(STATE/'inspection.json', value)
@@ -339,13 +345,23 @@ def dispatch(method, path=None, review_id=None, mode=None):
         return worker('apply',str(builder.output),review_id)
     if method == 'status':
         result = Engine().status()
-        result['job'] = json.loads(JOB.read_text()) if JOB.exists() else {'status': 'idle'}
+        from builder import read_record
+        try:
+            result['job'] = read_record(JOB) if JOB.exists() else {'status': 'idle'}
+            if result['job'].get('status') not in ('idle','running','complete','failed'):
+                raise ValueError('Invalid update task state')
+        except (OSError,ValueError):
+            result['job']={'status':'failed','result':{'error':'Update task record is damaged; transaction state has been retained'}}
         generation=STATE/'builder/job.json'
         try:
-            generating=generation.is_file() and json.loads(generation.read_text()).get('status')=='running'
+            generating=generation.is_file() and read_record(generation).get('status')=='running'
         except (OSError,ValueError):
             generating=False
-        if result['job']['status'] == 'complete' and not generating:
+        try:
+            inspecting=read_record(STATE/'inspection.json',1<<20).get('status')=='running'
+        except (OSError,ValueError):
+            inspecting=False
+        if result['job']['status'] == 'complete' and not generating and not inspecting:
             with (STATE/'job.lock').open('a') as lock:
                 try:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
