@@ -44,7 +44,73 @@ def boot_image(slot='a', kernel=b'kernel-before', family='e5', payload=0, extra=
     return body.ljust((64 << 20)-64, b'\0')+footer
 
 
+def joined_cpio_boot(image, late, block_size=4096, padding=512):
+    """Model lz4 -dc | lz4: multiple newc archives in one legacy frame."""
+    import boot
+    start, size, avb, avb_size, _ = layout(image, 'mu300')
+    chunks = list(archives(image[start:start+size]))
+    chunks += list(archives(overlay(late)))
+    raw = b'\0'*padding + b''.join(chunk.ljust((len(chunk)+padding-1)//padding*padding, b'\0')
+                                             for chunk in chunks) + b'\0'*padding
+    ram = bytearray(boot.MAGIC)
+    for offset in range(0, len(raw), block_size):
+        data = raw[offset:offset+block_size]
+        token = bytearray([min(len(data), 15) << 4])
+        if len(data) >= 15:
+            length = len(data)-15
+            token.extend(b'\xff'*(length//255)); token.append(length%255)
+        token.extend(data)
+        ram.extend(struct.pack('<I', len(token))); ram.extend(token)
+    header = bytearray(image[:4096]); struct.pack_into('<I', header, 12, len(ram))
+    body = bytes(header)+image[4096:start]+bytes(ram)
+    body = body.ljust((len(body)+4095)&~4095, b'\0'); new_avb = len(body)
+    body += image[avb:avb+avb_size]
+    footer = bytearray(image[-64:]); struct.pack_into('>QQQ', footer, 12, new_avb, new_avb, avb_size)
+    return body.ljust((64 << 20)-64, b'\0')+footer
+
+
 class BootTests(unittest.TestCase):
+    def test_joined_archives_preserve_late_storage_and_init_across_blocks(self):
+        import boot
+        name = 'etc/mu300-desktop-root-mode'
+        initial = boot_image(family='mu300', extra={
+            'etc/mu300-root-target': (b'sd\n', stat.S_IFREG|0o644)})
+        late_init = b'#!/bin/sh\n# installed final init\n    log "stage=switch-root root=$rootdir init=$init"\n'
+        late = {name:(b'part\n', stat.S_IFREG|0o644),
+                'init':(late_init, stat.S_IFREG|0o755)}
+        for block_size in (7, 113, 4096):
+            with self.subTest(block_size=block_size):
+                current = joined_cpio_boot(initial, late, block_size)
+                found = boot.metadata(current, 'mu300', lambda _:True)
+                self.assertEqual(found[name][0], b'part\n')
+                self.assertEqual(found['init'][0], late_init)
+                start,size,*_ = layout(current, 'mu300')
+                decoded = {n:data for raw in archives(current[start:start+size])
+                           for n,data,_ in entries(raw)}
+                self.assertEqual(decoded[name], b'part\n')
+                self.assertEqual(decoded['init'], late_init)
+
+    def test_binding_uses_late_roles_in_merged_frames_for_both_families(self):
+        import boot
+        for family,name,value in (
+                ('mu300','etc/mu300-desktop-root-mode',b'part\n'),
+                ('e5','etc/e5/boot-request',b'e5.root=part\n')):
+            current = joined_cpio_boot(boot_image('a',family=family),
+                                      {name:(value,stat.S_IFREG|0o644)}, padding=8192)
+            incoming = boot_image('b',kernel=b'new-kernel',family=family)
+            updated = bind(incoming,current,family)
+            self.assertEqual(boot.metadata(updated,family,lambda n:n==name)[name][0],value)
+            self.assertEqual(updated[4096:4106],b'new-kernel')
+            self.assertEqual(updated[44:1580],current[44:1580])
+            self.assertEqual(bind(updated,updated,family),updated)
+
+    def test_joined_archive_does_not_hide_malformed_nonzero_tail(self):
+        import boot
+        raw = next(archives(overlay({'x':(b'data',stat.S_IFREG|0o644)})))
+        with self.assertRaises(ValueError): list(entries(raw+b'\0'*512+b'not-a-cpio'))
+        stream = boot._BlockStream(iter((b'\0'*4096,b'070701')))
+        with self.assertRaises(ValueError): stream.cpio_header()
+
     def test_e5_partition_request_survives_guard_and_repeated_updates_without_cmdline_help(self):
         import boot
         name = 'etc/e5/boot-request'

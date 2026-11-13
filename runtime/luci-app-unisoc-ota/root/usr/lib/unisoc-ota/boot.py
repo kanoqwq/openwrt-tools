@@ -7,11 +7,13 @@ root transaction. No external LZ4 package is required on the device.
 import hashlib
 import os
 from pathlib import Path
+import re
 import stat
 import struct
 import zlib
 
 MAGIC = bytes.fromhex('02214c18')
+_CPIO_NONZERO = re.compile(rb'[^\x00]')
 HOOK = '''
 # unisoc-ota-recovery-v2
 if [ -s /newroot/etc/unisoc-ota/journal.json ] && grep -Eq '"status":"(applying|rolling_back)"' /newroot/etc/unisoc-ota/journal.json; then
@@ -122,16 +124,20 @@ def archives(ram):
 def entries(data):
     at = 0
     while at < len(data):
+        # Linux accepts multiple newc archives (and NUL padding) inside one
+        # decompressed stream. Later entries override earlier base segments.
+        next_header = _CPIO_NONZERO.search(data, at)
+        if next_header is None: return
+        at = next_header.start()
         if data[at:at+6] not in (b'070701', b'070702') or at+110 > len(data):
-            if not data[at:].strip(b'\0'): return
             raise ValueError('Invalid boot CPIO')
         fields = [int(data[at+6+i*8:at+14+i*8], 16) for i in range(13)]
         size, namesize = fields[6], fields[11]; end = at+110+namesize
         if not namesize or end > len(data) or data[end-1] != 0: raise ValueError('Invalid CPIO name')
         name = data[at+110:end-1].decode(); at = (end+3)&~3
         if at+size > len(data): raise ValueError('Truncated CPIO file')
-        if name == 'TRAILER!!!': return
-        yield name.removeprefix('./'), data[at:at+size], fields[1]
+        if name != 'TRAILER!!!':
+            yield name.removeprefix('./'), data[at:at+size], fields[1]
         at = (at+size+3)&~3
 
 
@@ -220,6 +226,18 @@ class _BlockStream:
             self.at += count; self.position += count; remaining -= count
         return b''.join(result) if keep else None
 
+    def cpio_header(self):
+        """Skip inter-archive padding without retaining decoded module data."""
+        while True:
+            if self.at == len(self.buffer):
+                try: self.buffer = memoryview(next(self.blocks)); self.at = 0
+                except StopIteration: return None
+            next_header = _CPIO_NONZERO.search(self.buffer, self.at)
+            end = next_header.start() if next_header else len(self.buffer)
+            self.position += end-self.at
+            self.at = end
+            if next_header: return self.take(110)
+
 
 def metadata(image, family, wanted):
     start, size, *_ = layout(image, family)
@@ -228,8 +246,8 @@ def metadata(image, family, wanted):
         for blocks in _frames(ram):
             stream = _BlockStream(block_decode(bytes(ram[at:at+size])) for at,size in blocks)
             while True:
-                header = stream.take(110, optional=True)
-                if header is None or not header.strip(b'\0'): break
+                header = stream.cpio_header()
+                if header is None: break
                 if header[:6] not in (b'070701', b'070702'): raise ValueError('Invalid boot CPIO')
                 fields = [int(header[6+i*8:14+i*8], 16) for i in range(13)]
                 length, namesize = fields[6], fields[11]
@@ -238,8 +256,7 @@ def metadata(image, family, wanted):
                 if raw[-1] != 0: raise ValueError('Invalid CPIO filename')
                 name = raw[:-1].decode().removeprefix('./')
                 stream.take((-stream.position)%4, keep=False)
-                if name == 'TRAILER!!!': break
-                if wanted(name): result[name] = (stream.take(length), fields[1])
+                if name != 'TRAILER!!!' and wanted(name): result[name] = (stream.take(length), fields[1])
                 else: stream.take(length, keep=False)
                 stream.take((-stream.position)%4, keep=False)
     finally:
