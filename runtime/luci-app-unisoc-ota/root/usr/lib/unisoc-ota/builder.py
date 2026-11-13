@@ -5,11 +5,12 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import stat
 import sys
 import tempfile
 import time
 
-from engine import Engine, Patch, atomic_json
+from engine import Engine, Patch, atomic_json, sync_dir
 
 
 class Builder:
@@ -56,8 +57,36 @@ class Builder:
                     atomic_json(self.job,value)
         uploads={name: (self.home/name).stat().st_size for name in ('old.zip','new.zip')
                  if (self.home/name).is_file() and not (self.home/name).is_symlink()}
+        try:
+            stamp=self.output.lstat()
+            if not stat.S_ISREG(stamp.st_mode): stamp=None
+        except FileNotFoundError:
+            stamp=None
+        available=stamp is not None
         return {'job':value,'baseline':self.baseline_status(),'uploads':uploads,
-                'download':bool(value.get('status')=='complete' and value.get('id') and self.output.is_file())}
+                'has_output':available,'output_bytes':stamp.st_size if stamp else 0,
+                'output_id':self.output_id(stamp) if stamp else None,
+                'download':bool(value.get('status')=='complete' and value.get('id') and available)}
+
+    @staticmethod
+    def output_id(stamp):
+        return hashlib.sha256(str((stamp.st_dev,stamp.st_ino,stamp.st_size,stamp.st_mtime_ns)).encode()).hexdigest()
+
+    def discard_generated(self, expected):
+        # The same admission lock covers generation, inspection and application.
+        # Only this fixed output is disposable; baseline and recovery stay intact.
+        with (self.state/'job.lock').open('a') as held:
+            fcntl.flock(held,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            journal=self.state/'journal.json'
+            if journal.exists() and json.loads(journal.read_text()).get('status') in ('preparing','applying','rolling_back'):
+                raise ValueError('Update recovery is pending')
+            if self.output.is_symlink():
+                raise ValueError('Unsafe generated patch path')
+            if self.output.exists() and self.output_id(self.output.stat())!=expected:
+                raise ValueError('Generated patch changed; refresh before deleting it')
+            self.output.unlink(missing_ok=True)
+            sync_dir(self.home)
+        return self.status()
 
     def start(self, mode):
         if mode not in ('current','pair','baseline'):

@@ -16,6 +16,7 @@ var callReboot = rpc.declare({object:'unisoc-ota', method:'reboot', nobatch:true
 var callBuildStatus = rpc.declare({object:'unisoc-ota', method:'build_status', nobatch:true});
 var callGenerate = rpc.declare({object:'unisoc-ota', method:'generate', params:['mode'], nobatch:true});
 var callStartGenerated = rpc.declare({object:'unisoc-ota', method:'start_generated', params:['id'], nobatch:true});
+var callDiscardGenerated = rpc.declare({object:'unisoc-ota', method:'discard_generated', params:['id'], nobatch:true});
 
 var CSS = `
 .mud-ota{max-width:1200px;margin:0 auto;padding:4px 0 16px}
@@ -301,6 +302,8 @@ return view.extend({
         var baselineSave=action(tr('保存当前版本基准','Save current baseline','Mevcut temel sürümü kaydet'),'history');
         var generate=action(tr('生成 .ota','Generate .ota','.ota oluştur'),'history','mud-ota-primary');
         var resultButton=action(tr('查看生成结果','View generated patch','Oluşturulan yamayı göster'),'history');
+        var deleteGenerated=action(tr('删除生成包','Delete generated patch','Oluşturulan yamayı sil'),'trash','warn');
+        var outputNote=E('p',{class:'mud-note',id:'ota-generated-storage'});
         var buildDetail=E('div',{class:'mud-ota-build-status',role:'status','aria-live':'polite'});
         var buildProgressLabel=E('span',{id:'ota-build-progress-label'}),buildFill=E('div',{class:'mud-ota-build-fill'});
         var buildTrack=E('div',{class:'mud-ota-build-track',id:'ota-build-progress-track',role:'progressbar','aria-label':tr('当前步骤进度','Current step progress','Mevcut adım ilerlemesi')},[buildFill]);
@@ -323,6 +326,9 @@ return view.extend({
             baselineSave.disabled=locked||!uploads['old.zip'];
             generate.disabled=locked||!uploads['new.zip']||!(pair?uploads['old.zip']:ready);
             resultButton.hidden=!buildState.download;resultButton.disabled=locked;
+            deleteGenerated.hidden=!buildState.has_output;deleteGenerated.disabled=locked||!buildState.output_id;
+            outputNote.hidden=!buildState.has_output;
+            outputNote.textContent=tr('生成包占用：','Generated patch storage: ','Oluşturulan yamanın kapladığı alan: ')+bytes(buildState.output_bytes)+tr('。仅保留最近一份，可下载后手动删除。',' Only the latest copy is retained; you may delete it after downloading.',' Yalnızca son kopya tutulur; indirdikten sonra silebilirsiniz.');
             oldSize.textContent=uploads['old.zip']?bytes(uploads['old.zip']):tr('未上传','Not uploaded','Yüklenmedi');
             currentSize.textContent=oldSize.textContent;
             newSize.textContent=uploads['new.zip']?bytes(uploads['new.zip']):tr('未上传','Not uploaded','Yüklenmedi');
@@ -351,11 +357,25 @@ return view.extend({
                     E('div',{class:'mud-ota-modal-actions'},[
                         E('button',{type:'button',class:'mud-btn',click:function(){ui.hideModal();}},tr('稍后处理','Later','Daha sonra')),
                         E('button',{type:'button',class:'mud-btn',click:downloadGenerated},tr('下载 .ota','Download .ota','.ota indir')),
+                        E('button',{type:'button',class:'mud-btn warn',disabled:!L.hasViewPermission()||null,click:function(){ui.hideModal();return deleteGenerated.onclick();}},tr('删除生成包','Delete generated patch','Oluşturulan yamayı sil')),
                         E('button',{type:'button',class:'mud-btn mud-ota-primary',disabled:!L.hasViewPermission()||null,click:function(){
                             if(busy||buildBusy||!L.hasViewPermission())return;ui.hideModal();return inspectPatch(true);
                         }},tr('检查并刷入','Check and apply','Kontrol et ve uygula'))])])]);
         }
         resultButton.onclick=generatedModal;
+        deleteGenerated.onclick=function(){
+            if(busy||buildBusy||deleteGenerated.disabled||!L.hasViewPermission())return;
+            var expected=buildState.output_id;
+            modal(tr('删除生成的差分包？','Delete the generated patch?','Oluşturulan yama silinsin mi?'),E('div',{},[
+                E('p',{},tr('将释放约 ','Reclaim approximately ','Yaklaşık ')+bytes(buildState.output_bytes)+tr(' 存储空间。',' of storage.',' depolama alanı açılır.')),
+                E('p',{class:'mud-note'},tr('只删除生成的 .ota。版本基准、恢复副本、已上传的固件和系统配置均保留；需要时可以重新生成。','Only the generated .ota is deleted. The baseline, recovery copy, uploaded firmware and system settings are kept. You can generate it again.','Yalnızca oluşturulan .ota silinir. Temel sürüm, kurtarma kopyası, yüklenen ürün yazılımı ve sistem ayarları korunur. Yeniden oluşturabilirsiniz.'))]),tr('删除生成包','Delete generated patch','Oluşturulan yamayı sil'),function(){
+                    if(busy||buildBusy||!L.hasViewPermission())return;
+                    clearNotice();buildBusy=true;controls();
+                    return callDiscardGenerated(expected).then(error).then(function(r){paintBuild(r,false);}).catch(function(e){
+                        return callBuildStatus().then(function(r){paintBuild(r,false);failed(e);}).catch(function(){buildBusy=false;controls();failed(e);});
+                    });
+                },true);
+        };
         function paintBuild(value,notify,awaitingAck){
             if(disposed)return;
             error(value);buildState=value;var job=value.job||{};
@@ -375,6 +395,7 @@ return view.extend({
                 buildBusy?(job.mode==='baseline'?tr('正在初始化当前版本基准，关闭网页不会中断任务。','Initializing clean baseline. Closing this page will not stop the task.','Temiz temel sürüm başlatılıyor. Sayfayı kapatmak görevi durdurmaz.'):tr('正在生成，请稍候；关闭网页不会中断任务。','Generating. You may close this page; the task will continue.','Oluşturuluyor. Sayfayı kapatsanız da görev sürer.'))+(job.path?'\n'+job.path:''):
                 job.status==='failed'?tr('生成失败：','Generation failed: ','Oluşturma başarısız: ')+(job.error||''):
                 job.status==='complete'?job.mode==='baseline'?tr('当前版本原始基准已保存。','Clean baseline saved.','Temiz temel sürüm kaydedildi.'):
+                !value.download?tr('生成的差分包已删除，需要时可重新生成。','Generated patch deleted. Generate it again when needed.','Oluşturulan yama silindi. Gerektiğinde yeniden oluşturun.'):
                 tr('差分包已生成，可下载或检查后刷入。','Patch ready to download or check and apply.','Yama indirilebilir veya kontrol edilip uygulanabilir.'):
                 tr('选择完整固件 ZIP，生成可直接使用的 .ota。','Select full firmware ZIP files to generate a directly usable .ota.','Tam ZIP dosyalarını seçerek doğrudan kullanılabilir .ota oluşturun.');
             controls();
@@ -418,7 +439,7 @@ return view.extend({
             E('p',{class:'mud-note'},tr('两种方式都基于完整固件的原始文件摘要，保留现有配置、插件和数据。生成完成后可选择是否刷入。','Both modes compare clean release indexes and preserve your settings, plugins and data. Choose whether to apply after generation.','Her iki yöntem temiz sürümleri karşılaştırır; ayarlar, eklentiler ve veriler korunur. Oluşturduktan sonra uygulamayı seçebilirsiniz.')),
             E('div',{class:'mud-ota-build-fields'},[E('label',{for:'ota-build-mode'},tr('生成方式','Source','Kaynak')),buildMode]),
             baselineNote,baselinePanel,oldRow,E('div',{class:'mud-ota-build-fields mud-ota-build-upload'},[newUpload,newSize]),
-            E('div',{class:'mud-ota-actions'},[generate,resultButton]),buildDetail,buildProgress]);
+            E('div',{class:'mud-ota-actions'},[generate,resultButton,deleteGenerated]),outputNote,buildDetail,buildProgress]);
         paintBuild(buildState,false);
         if(state.load_error){if(interrupted(state.load_error)){phase('reconnecting');watch();}else{initialRetries=0;failed(state.load_error);}}else show(state);
         if(loaded[3]&&loaded[3].status==='running'&&!state.load_error)inspectPatch(loaded[3].source==='generated',loaded[3]);

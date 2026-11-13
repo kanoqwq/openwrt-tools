@@ -26,7 +26,7 @@ class RPCTests(unittest.TestCase):
     def test_authenticated_metadata_is_accepted_for_every_method(self):
         for method in self.rpc.METHODS:
             args = {'ubus_rpc_session': 'a'*32}
-            if method in ('start','start_generated'): args['id'] = 'b'*64
+            if method in ('start','start_generated','discard_generated'): args['id'] = 'b'*64
             if method == 'generate':args['mode']='pair'
             if method == 'inspect_begin':args['source']='upload'
             if method == 'inspect_status':args['ticket']='c'*32
@@ -35,7 +35,7 @@ class RPCTests(unittest.TestCase):
                 if method=='generate':dispatch.assert_called_once_with(method,mode='pair')
                 elif method=='inspect_begin':dispatch.assert_called_once_with(method,mode='upload')
                 elif method=='inspect_status':dispatch.assert_called_once_with(method,review_id='c'*32)
-                else:dispatch.assert_called_once_with(method, None, 'b'*64 if method in ('start','start_generated') else None)
+                else:dispatch.assert_called_once_with(method, None, 'b'*64 if method in ('start','start_generated','discard_generated') else None)
 
     def test_large_inspection_rpc_reply_excludes_release_index_and_runtime(self):
         from test_ota import manifest

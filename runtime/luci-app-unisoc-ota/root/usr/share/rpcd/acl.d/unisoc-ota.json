@@ -6,7 +6,7 @@
       "file": {"/etc/unisoc-ota/builder/update.ota": ["read"]}
     },
     "write": {
-      "ubus": {"unisoc-ota": ["start", "rollback", "discard_recovery", "reboot", "generate", "start_generated", "inspect_begin"]},
+      "ubus": {"unisoc-ota": ["start", "rollback", "discard_recovery", "reboot", "generate", "start_generated", "inspect_begin", "discard_generated"]},
       "file": {
         "/etc/unisoc-ota/upload.ota": ["write"],
         "/etc/unisoc-ota/builder/old.zip": ["write"],

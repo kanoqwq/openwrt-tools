@@ -22,6 +22,11 @@ function fixture(write=true, initial=idle(), locale="en", initialBuild={job:{sta
         if(method==='inspect_status')return state.inspectionError?Promise.reject(Error(state.inspectionError)):Promise.resolve(state.inspectionJob||{status:'idle'});
         if(method==='build_status')return state.buildError?Promise.reject(Error(state.buildError)):Promise.resolve(state.buildStatus);
         if(method==='generate')return state.generateError?Promise.reject(Error(state.generateError)):Promise.resolve({status:'running',mode:args[0],phase:'queued'});
+        if(method==='discard_generated'){
+            if(state.deleteGeneratedError)return Promise.reject(Error(state.deleteGeneratedError));
+            state.buildStatus={...state.buildStatus,has_output:false,output_bytes:0,output_id:null,download:false};
+            return Promise.resolve(state.buildStatus);
+        }
         if(method==='start'&&state.rejectStart)return Promise.reject(Error('start rejected'));
         if(method==='start'&&state.startError)return Promise.reject(Error(state.startError));
         if(method==='start'&&state.startPromise)return state.startPromise;
@@ -324,6 +329,29 @@ async function main(){
     roResult.button('View generated patch').onclick();assert(roResult.modalButton('Check and apply').disabled);
     roResult.modalButton('Check and apply').click();assert(!roResult.calls.includes('inspect_begin'),'Read-only result action started inspection');
     const readonly=fixture(false);assert(readonly.button('Generate .ota').disabled);assert(readonly.button('Upload new full ZIP').disabled);
+    const output={job:{status:'complete',id:'a'.repeat(64),base_version:'r1',target_version:'r2'},baseline:{available:true},has_output:true,output_bytes:1048576,output_id:'b'.repeat(64),download:true,uploads:{}};
+    for(const [locale,label,cancel] of [['zh','删除生成包','取消'],['en','Delete generated patch','Cancel'],['tr','Oluşturulan yamayı sil','İptal']]){
+        const page=fixture(true,idle(),locale,{...output});
+        assert(!page.button(label).hidden);assert(!page.button(label).disabled);
+        assert.match(page.node('ota-generated-storage').textContent,/1.0 MiB/);
+        page.button(label).onclick();assert(!page.calls.includes('discard_generated'),'Opening confirmation deleted the generated file');
+        page.modalButton(cancel).click();assert(!page.calls.includes('discard_generated'));
+        page.button(label).onclick();await page.modalButton(label).click();
+        assert(page.arguments.some(([method,args])=>method==='discard_generated'&&args[0]===output.output_id));
+        assert(page.button(label).hidden);assert(page.button(locale==='zh'?'查看生成结果':locale==='tr'?'Oluşturulan yamayı göster':'View generated patch').hidden);
+        assert(page.node('ota-generated-storage').hidden);assert.equal(page.ticks.size,0);
+        assert(!page.calls.includes('discard_recovery'),'Generated-file deletion removed rollback data');
+    }
+    const retained=fixture(true,idle(),'en',{...output,job:{status:'failed'},download:false});
+    assert(!retained.button('Delete generated patch').hidden,'An older output became undeletable after a failed generation');
+    const deleteReadonly=fixture(false,idle(),'en',{...output});
+    assert(deleteReadonly.button('Delete generated patch').disabled);
+    deleteReadonly.button('Delete generated patch').onclick();assert(!deleteReadonly.calls.includes('discard_generated'));
+    const deleteBusy=fixture(true,idle(),'en',{...output,job:{status:'running'}});
+    assert(deleteBusy.button('Delete generated patch').disabled);deleteBusy.dispose();
+    const failedDelete=fixture(true,idle(),'en',{...output});failedDelete.deleteGeneratedError='Generated patch changed; refresh before deleting it';
+    failedDelete.button('Delete generated patch').onclick();await failedDelete.modalButton('Delete generated patch').click();
+    assert(!failedDelete.button('Delete generated patch').hidden);assert(!failedDelete.button('Delete generated patch').disabled);assert.equal(failedDelete.notifications.length,1);
     assert.equal(fixture().ticks.size,0,'Idle page kept polling');
     console.log('PASS LuCI update recovery, ZIP import, both generators, result modal, download, explicit review/apply, permissions and no idle polling');
 }

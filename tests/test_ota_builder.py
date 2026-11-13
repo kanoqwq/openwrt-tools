@@ -103,6 +103,49 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual((self.root/'usr/lib/test').read_bytes(),b'old')
         self.assertEqual((self.root/'usr/lib/my-plugin').read_bytes(),b'plugin')
 
+    def test_delete_generated_frees_only_output_and_keeps_baseline_uploads_and_recovery(self):
+        self.upload('old','new');ready=self.run_job('pair')
+        baseline=self.builder.baseline.read_bytes();version=(self.root/'etc/mu300/release.json').read_bytes()
+        recovery=self.builder.state/'backup-123';recovery.mkdir();(recovery/'keep').write_bytes(b'recovery')
+        self.upload('new')
+        self.assertTrue(ready['has_output']);self.assertEqual(ready['output_bytes'],self.builder.output.stat().st_size)
+        deleted=self.builder.discard_generated(ready['output_id'])
+        self.assertFalse(self.builder.output.exists());self.assertFalse(deleted['has_output']);self.assertFalse(deleted['download'])
+        self.assertEqual(deleted['output_bytes'],0);self.assertIsNone(deleted['output_id'])
+        self.assertEqual(deleted['job']['id'],ready['job']['id'])
+        self.assertEqual(self.builder.baseline.read_bytes(),baseline);self.assertTrue(deleted['baseline']['available'])
+        self.assertTrue((self.builder.home/'new.zip').exists());self.assertEqual((recovery/'keep').read_bytes(),b'recovery')
+        self.assertEqual((self.root/'etc/mu300/release.json').read_bytes(),version)
+        self.assertEqual((self.root/'etc/config/wireless').read_bytes(),b'user password')
+        self.assertFalse(self.builder.discard_generated(ready['output_id'])['has_output'],'Repeat deletion should be harmless')
+
+    def test_delete_is_locked_against_generation_inspection_apply_and_pending_recovery(self):
+        self.builder.output.write_bytes(b'output');token=self.builder.status()['output_id']
+        with (self.builder.state/'job.lock').open('a') as held:
+            fcntl.flock(held,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            with self.assertRaises(BlockingIOError):self.builder.discard_generated(token)
+        self.assertEqual(self.builder.output.read_bytes(),b'output')
+        (self.builder.state/'journal.json').write_text(json.dumps({'status':'applying'}))
+        with self.assertRaisesRegex(ValueError,'recovery'):self.builder.discard_generated(token)
+        self.assertTrue(self.builder.output.exists())
+
+    def test_failed_generation_retained_output_remains_deletable_and_stale_confirmation_is_rejected(self):
+        self.builder.output.write_bytes(b'previous output')
+        atomic_json(self.builder.job,{'status':'failed','error':'bad newer upload'})
+        ready=self.builder.status();self.assertFalse(ready['download']);self.assertTrue(ready['has_output'])
+        other=self.builder.home/'other';other.write_bytes(b'new output');os.replace(other,self.builder.output)
+        with self.assertRaisesRegex(ValueError,'changed'):self.builder.discard_generated(ready['output_id'])
+        self.assertEqual(self.builder.output.read_bytes(),b'new output')
+        token=self.builder.status()['output_id'];self.builder.discard_generated(token)
+        self.assertFalse(self.builder.output.exists())
+
+    def test_delete_does_not_follow_output_symlink(self):
+        target=self.folder/'private';target.write_bytes(b'keep')
+        self.builder.output.symlink_to(target)
+        self.assertFalse(self.builder.status()['has_output'])
+        with self.assertRaisesRegex(ValueError,'Unsafe'):self.builder.discard_generated('b'*64)
+        self.assertEqual(target.read_bytes(),b'keep')
+
     def test_first_ota_without_existing_baseline_restores_absence_on_rollback(self):
         self.upload('old','new');self.run_job('pair');self.builder.baseline.unlink()
         with Patch(self.builder.output) as result:self.builder.engine.apply(result)

@@ -21,7 +21,7 @@ UPLOAD = STATE / 'upload.ota'
 JOB = STATE / 'job.json'
 METHODS = {'status': {}, 'inspect': {}, 'start': {'id':''}, 'rollback_check': {}, 'rollback': {}, 'discard_recovery': {}, 'reboot': {},
            'build_status': {}, 'generate': {'mode':''}, 'inspect_generated': {}, 'start_generated': {'id':''},
-           'inspect_begin': {'source':''}, 'inspect_status': {'ticket':''}}
+           'inspect_begin': {'source':''}, 'inspect_status': {'ticket':''}, 'discard_generated': {'id':''}}
 
 
 def inspection_summary(result):
@@ -324,11 +324,15 @@ def dispatch(method, path=None, review_id=None, mode=None):
     STATE.mkdir(mode=0o700, exist_ok=True)
     if method == 'inspect_begin': return begin_inspection(mode)
     if method == 'inspect_status': return inspection_status('' if review_id is None else review_id)
-    if method in ('build_status','generate','inspect_generated','start_generated'):
+    if method in ('build_status','generate','inspect_generated','start_generated','discard_generated'):
         from builder import Builder
         builder=Builder(ROOT or '/')
         if method=='build_status': return builder.status()
         if method=='generate': return builder.start(mode)
+        if method=='discard_generated':
+            if not isinstance(review_id,str) or not re.fullmatch(r'[a-f0-9]{64}',review_id):
+                raise ValueError('Refresh before deleting the generated patch')
+            return builder.discard_generated(review_id)
         if method=='inspect_generated': return builder.inspect_generated()
         if not isinstance(review_id,str) or not re.fullmatch(r'[a-f0-9]{64}',review_id):
             raise ValueError('Inspect this patch before applying')
@@ -456,7 +460,7 @@ def main():
             print(json.dumps(dispatch(method, mode=args['source']))); return
         if method == 'inspect_status' and set(args) == {'ticket'}:
             print(json.dumps(dispatch(method, review_id=args['ticket']))); return
-        if method in ('start','start_generated') and set(args) == {'id'}:
+        if method in ('start','start_generated','discard_generated') and set(args) == {'id'}:
             review_id = args['id']
         elif method == 'generate' and set(args) == {'mode'}:
             print(json.dumps(dispatch(method,mode=args['mode'])))
