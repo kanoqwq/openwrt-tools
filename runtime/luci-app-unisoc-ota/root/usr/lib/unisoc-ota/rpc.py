@@ -20,7 +20,103 @@ STATE = Path(ROOT+'/etc/unisoc-ota')
 UPLOAD = STATE / 'upload.ota'
 JOB = STATE / 'job.json'
 METHODS = {'status': {}, 'inspect': {}, 'start': {'id':''}, 'rollback_check': {}, 'rollback': {}, 'discard_recovery': {}, 'reboot': {},
-           'build_status': {}, 'generate': {'mode':''}, 'inspect_generated': {}, 'start_generated': {'id':''}}
+           'build_status': {}, 'generate': {'mode':''}, 'inspect_generated': {}, 'start_generated': {'id':''},
+           'inspect_begin': {'source':''}, 'inspect_status': {'ticket':''}}
+
+
+def inspection_summary(result):
+    """Bound ubus replies, not verification. Large release indexes stay local.
+
+    ubusd disconnects a client which sends a message over its 1 MiB limit;
+    returning a full clean-release index can therefore remove rpcd's session
+    object as well as the OTA object. Legacy LuCI needs operations.length only.
+    CLI/desktop inspection continues to receive the full original result.
+    """
+    manifest = result['manifest']
+    summary = {key:result[key] for key in ('id','applicable','required_bytes','free_bytes','boot_work') if key in result}
+    summary['manifest'] = {key:str(manifest[key])[:1024] for key in
+                           ('family','profile','base_version','target_version','kernel_release') if key in manifest}
+    summary['manifest']['operations'] = [None] * len(manifest['operations'])
+    if manifest.get('boot'): summary['manifest']['boot'] = True
+    for key in ('conflicts','package_conflicts'):
+        items = result.get(key, [])
+        summary[key] = [str(item)[:2048] for item in items[:20]]
+        summary[key+'_count'] = len(items)
+    summary['preserved_count'] = len(result.get('preserved', []))
+    return summary
+
+
+def inspection_status(ticket=''):
+    if not isinstance(ticket, str) or ticket and not re.fullmatch(r'[a-f0-9]{32}', ticket):
+        raise ValueError('Invalid inspection ticket')
+    record = STATE/'inspection.json'
+    value = json.loads(record.read_text()) if record.exists() else {'status':'idle'}
+    if ticket and value.get('ticket') != ticket:
+        raise ValueError('Inspection was replaced; inspect this patch again')
+    if value.get('status') == 'running':
+        with (STATE/'job.lock').open('a') as held:
+            try:
+                fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                pass
+            else:
+                value.update(status='failed', error='Patch inspection was interrupted; no update started')
+                atomic_json(record, value)
+    return value
+
+
+def begin_inspection(source):
+    if source not in ('upload', 'generated'):
+        raise ValueError('Invalid inspection source')
+    path = UPLOAD if source == 'upload' else STATE/'builder/update.ota'
+    with (STATE/'job.lock').open('a') as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        journal = STATE/'journal.json'
+        if journal.exists() and json.loads(journal.read_text()).get('status') in ('preparing','applying','rolling_back'):
+            raise ValueError('Update recovery is pending')
+        if path.is_symlink() or not path.is_file():
+            raise ValueError('Upload or generate a patch before inspecting it')
+        expected = None
+        if source == 'generated':
+            job = json.loads((STATE/'builder/job.json').read_text())
+            if job.get('status') != 'complete' or not re.fullmatch(r'[a-f0-9]{64}', job.get('id','')):
+                raise ValueError('Generate a patch before inspecting it')
+            expected = job['id']
+        ticket = os.urandom(16).hex()
+        value = dict(status='running', ticket=ticket, source=source, phase='queued')
+        atomic_json(STATE/'inspection.json', value)
+        try:
+            # Return before any unpacking, blob hashing, or live file checks.
+            # These can exceed both the HTTP and rpcd executable timeouts.
+            subprocess.Popen([sys.executable, __file__, '_inspect', source, ticket,
+                              expected or '', str(held.fileno())], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True, pass_fds=(held.fileno(),))
+        except BaseException as error:
+            atomic_json(STATE/'inspection.json', dict(value, status='failed', error=str(error)))
+            raise
+        return value
+
+
+def inspect_worker(source, ticket, expected, lock_fd):
+    with os.fdopen(lock_fd, 'a'):
+        value = dict(status='running', source=source, ticket=ticket)
+        record = STATE/'inspection.json'
+        path = UPLOAD if source == 'upload' else STATE/'builder/update.ota'
+        try:
+            before = path.stat()
+            atomic_json(record, dict(value, phase='verifying'))
+            with ota_payload(path) as payload, Patch(payload) as patch:
+                if expected and patch.id != expected:
+                    raise ValueError('Generated patch changed; generate it again')
+                atomic_json(record, dict(value, phase='checking'))
+                result = inspection_summary(Engine().inspect(patch))
+            after = path.stat()
+            if (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns) != (after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns):
+                raise ValueError('Upload changed during inspection; inspect this patch again')
+            atomic_json(record, dict(value, status='complete', result=result))
+        except BaseException as error:
+            atomic_json(record, dict(value, status='failed', error=str(error)[-2000:]))
 
 
 def boot_id():
@@ -226,6 +322,8 @@ def worker(command, path=None, expected_id=None):
 
 def dispatch(method, path=None, review_id=None, mode=None):
     STATE.mkdir(mode=0o700, exist_ok=True)
+    if method == 'inspect_begin': return begin_inspection(mode)
+    if method == 'inspect_status': return inspection_status('' if review_id is None else review_id)
     if method in ('build_status','generate','inspect_generated','start_generated'):
         from builder import Builder
         builder=Builder(ROOT or '/')
@@ -316,6 +414,10 @@ def dispatch(method, path=None, review_id=None, mode=None):
 
 
 def main():
+    if sys.argv[1:2] == ['_inspect']:
+        source, ticket, expected, lock_fd = sys.argv[2:6]
+        inspect_worker(source, ticket, expected, int(lock_fd))
+        return
     if sys.argv[1:2] == ['_prepare_apply']:
         path, expected_id, lock_fd = sys.argv[2:5]
         prepare_apply(path, expected_id, int(lock_fd))
@@ -350,6 +452,10 @@ def main():
         # transport metadata, not a method argument. ACLs are enforced by rpcd.
         args.pop('ubus_rpc_session', None)
         method, path = sys.argv[2], None
+        if method == 'inspect_begin' and set(args) == {'source'}:
+            print(json.dumps(dispatch(method, mode=args['source']))); return
+        if method == 'inspect_status' and set(args) == {'ticket'}:
+            print(json.dumps(dispatch(method, review_id=args['ticket']))); return
         if method in ('start','start_generated') and set(args) == {'id'}:
             review_id = args['id']
         elif method == 'generate' and set(args) == {'mode'}:
@@ -363,7 +469,10 @@ def main():
         method = sys.argv[1]
         path = sys.argv[2] if len(sys.argv) == 3 or method == 'start' and len(sys.argv) == 4 else None
         review_id = sys.argv[3] if method == 'start' and len(sys.argv) == 4 else None
-    print(json.dumps(dispatch(method, path, review_id)))
+    result = dispatch(method, path, review_id)
+    if sys.argv[1:2] == ['call'] and method in ('inspect','inspect_generated') and 'manifest' in result:
+        result = inspection_summary(result)
+    print(json.dumps(result))
 
 
 if __name__ == '__main__':

@@ -52,13 +52,22 @@ def patch_filename(old, new, source):
 
 
 class Release:
-    def __init__(self, source, progress=lambda *_: None):
+    def __init__(self, source, progress=lambda *_: None, details=None):
         self.source = Path(source)
         self.progress = progress
+        self.details = details
         self.stack = ExitStack()
         self.entries = {}
         self.packages = {}
         self.package_db = b''
+
+    def report(self, phase, path='', completed=None, total=None, unit=None):
+        if self.details is not None:
+            self.details(dict(phase=phase,path=path,source=self.source.name,
+                              completed=completed,total=total,unit=unit))
+
+    def size(self, name):
+        return self.files.getinfo(self.prefix+name).file_size if self.files else (self.source/name).stat().st_size
 
     def __enter__(self):
         try:
@@ -72,6 +81,7 @@ class Release:
         self.stack.close()
 
     def load(self):
+        self.report('open')
         if self.source.is_dir():
             self.prefix = ''
             self.files = None
@@ -102,6 +112,7 @@ class Release:
             # Sequential tar reading avoids extracting a root tree or retaining a
             # second compressed copy. Only metadata and hashes stay in memory.
             total=0
+            self.report('index',rootfs,0,unit='files')
             for node in tar:
                 total+=node.size
                 if total>16<<30 or len(self.entries)>=250000:
@@ -110,6 +121,7 @@ class Release:
                 if name in ('', '.'):
                     continue
                 safe_name(name)
+                self.report('index',name,len(self.entries),unit='files')
                 if name in self.entries:
                     raise ValueError('Duplicate rootfs path: ' + name)
                 d = dict(mode=node.mode, uid=node.uid, gid=node.gid, xattrs={})
@@ -140,6 +152,7 @@ class Release:
                     continue
                 self.entries[name] = d
                 self.progress('index', name)
+                self.report('index',name,len(self.entries),unit='files')
             self.rootfs_name = rootfs
         else:
             self.family = 'e5'
@@ -161,6 +174,8 @@ class Release:
             # This is read-only userspace parsing, not a loop mount or WSL copy.
             scratch = self.source if self.source.is_dir() else self.source.parent
             image = self.stack.enter_context(tempfile.TemporaryFile(dir=scratch))
+            packed_size=self.size(self.rootfs_name)
+            self.report('unpack',self.rootfs_name,0,packed_size,'compressed_bytes')
             with self.open(self.rootfs_name) as compressed, gzip.GzipFile(fileobj=compressed) as stream:
                 total = 0
                 for block in iter(lambda: stream.read(4 << 20), b''):
@@ -170,10 +185,12 @@ class Release:
                     if shutil.disk_usage(scratch).free < len(block) + (64 << 20):
                         raise ValueError('Insufficient temporary disk space')
                     image.write(block)
+                    self.report('unpack',self.rootfs_name,compressed.tell(),packed_size,'compressed_bytes')
             image.seek(0)
             from dissect.extfs import ExtFS
             self.extfs = ExtFS(image)
             seen = set()
+            self.report('index',self.rootfs_name,0,unit='files')
 
             def walk(node, prefix=''):
                 if node.inum in seen:
@@ -183,6 +200,7 @@ class Release:
                     if child.filename in ('.', '..'):
                         continue
                     name = safe_name(prefix + child.filename)
+                    self.report('index',name,len(self.entries),unit='files')
                     d = dict(mode=int(stat.S_IMODE(child.inode.i_mode)), uid=int(child.inode.i_uid),
                              gid=int(child.inode.i_gid),
                              xattrs={a.name: base64.b64encode(a.value).decode() for a in child.xattr})
@@ -203,6 +221,7 @@ class Release:
                     if len(self.entries)>250000:
                         raise ValueError('Excessive full release contents')
                     self.progress('index', name)
+                    self.report('index',name,len(self.entries),unit='files')
                     if d['kind'] == 'dir':
                         walk(child, name + '/')
                 seen.remove(node.inum)
@@ -229,18 +248,27 @@ class Release:
             return json.load(f)
 
     def check(self, name, wanted):
+        total=self.size(name)
+        self.report('verify',name,0,total,'bytes')
         with self.open(name) as stream:
-            if digest(stream) != wanted:
+            checksum=hashlib.sha256();completed=0
+            for block in iter(lambda:stream.read(1<<20),b''):
+                checksum.update(block);completed+=len(block)
+                self.report('verify',name,completed,total,'bytes')
+            if checksum.hexdigest() != wanted:
                 raise ValueError('Full package checksum mismatch: ' + name)
 
     def write_blobs(self, archive, wanted):
         pending = set(wanted)
+        count=len(pending)
+        self.report('write','',0,count,'files')
         if hasattr(self, 'extfs'):
             for name, d in self.entries.items():
                 if d.get('sha256') in pending:
                     with self.extfs.get(name).open() as source, archive.open('blobs/' + d['sha256'], 'w') as dest:
                         shutil.copyfileobj(source, dest, 1 << 20)
                     pending.remove(d['sha256'])
+                    self.report('write',name,count-len(pending),count,'files')
         else:
             with self.open(self.rootfs_name) as source, tarfile.open(fileobj=source, mode='r|gz') as tar:
                 for node in tar:
@@ -251,6 +279,7 @@ class Release:
                     with tar.extractfile(node) as stream, archive.open('blobs/' + d['sha256'], 'w') as dest:
                         shutil.copyfileobj(stream, dest, 1 << 20)
                     pending.remove(d['sha256'])
+                    self.report('write',name,count-len(pending),count,'files')
         if pending:
             raise ValueError('Cannot find payload content: ' + ', '.join(pending))
 
@@ -359,7 +388,7 @@ def compare(old, new):
                 removed=sum(o['after'] is None for o in operations)), extra
 
 
-def analyze(old_path, new_path, output=None, progress=lambda *_: None, index_directory=None, base_index_output=None):
+def analyze(old_path, new_path, output=None, progress=lambda *_: None, index_directory=None, base_index_output=None, details=None):
     if not Path(new_path).is_dir() and Path(new_path).suffix.lower() == '.json':
         raise ValueError('The new release must be a full package, not a version index / 新版必须选择完整安装包，不能使用版本摘要')
     # Old image is released before decompressing the new one. Only the previous
@@ -368,12 +397,13 @@ def analyze(old_path, new_path, output=None, progress=lambda *_: None, index_dir
         from .release_index import load_index
         old = load_index(old_path)
     else:
-        with Release(old_path, progress) as old:
+        with Release(old_path, progress, **({'details':details} if details is not None else {})) as old:
             pass
     if base_index_output is not None:
         from .release_index import snapshot, write_index
         write_index(base_index_output, snapshot(old))
-    with Release(new_path, progress) as new:
+    with Release(new_path, progress, **({'details':details} if details is not None else {})) as new:
+        new.report('compare')
         result, extra = compare(old, new)
         if index_directory is not None and result['can_export']:
             from .release_index import save_index
@@ -390,6 +420,7 @@ def analyze(old_path, new_path, output=None, progress=lambda *_: None, index_dir
             if tmp.exists():
                 raise ValueError('Output staging exists')
             try:
+                new.report('write')
                 with zipfile.ZipFile(tmp, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
                     archive.writestr('manifest.json', canonical(result['manifest']))
                     wanted = {o['after']['sha256'] for o in result['manifest']['operations']
@@ -400,6 +431,7 @@ def analyze(old_path, new_path, output=None, progress=lambda *_: None, index_dir
                         archive.writestr('blobs/'+h, content)
                     new.write_blobs(archive, wanted-set(extra))
                 from .ota_engine import Patch
+                new.report('validate',output.name)
                 with Patch(tmp):
                     pass
                 os.rename(tmp, output)

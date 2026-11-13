@@ -6,7 +6,8 @@
 'require mu300.common as M';
 
 var callStatus = rpc.declare({object:'unisoc-ota', method:'status', nobatch:true});
-var callInspect = rpc.declare({object:'unisoc-ota', method:'inspect', nobatch:true});
+var callInspectBegin = rpc.declare({object:'unisoc-ota', method:'inspect_begin', params:['source'], nobatch:true});
+var callInspectStatus = rpc.declare({object:'unisoc-ota', method:'inspect_status', params:['ticket'], nobatch:true});
 var callStart = rpc.declare({object:'unisoc-ota', method:'start', params:['id'], nobatch:true});
 var callRollback = rpc.declare({object:'unisoc-ota', method:'rollback', nobatch:true});
 var callRollbackCheck = rpc.declare({object:'unisoc-ota', method:'rollback_check', nobatch:true});
@@ -14,12 +15,11 @@ var callDiscard = rpc.declare({object:'unisoc-ota', method:'discard_recovery', n
 var callReboot = rpc.declare({object:'unisoc-ota', method:'reboot', nobatch:true});
 var callBuildStatus = rpc.declare({object:'unisoc-ota', method:'build_status', nobatch:true});
 var callGenerate = rpc.declare({object:'unisoc-ota', method:'generate', params:['mode'], nobatch:true});
-var callInspectGenerated = rpc.declare({object:'unisoc-ota', method:'inspect_generated', nobatch:true});
 var callStartGenerated = rpc.declare({object:'unisoc-ota', method:'start_generated', params:['id'], nobatch:true});
 
 var CSS = `
 .mud-ota{max-width:1200px;margin:0 auto;padding:4px 0 16px}
-.mud-ota .mud-ota-heading{margin:0 0 22px}.mud-ota .mud-ota-heading h2{border:0;padding:0;margin:5px 0 9px;font-size:1.5rem;letter-spacing:-.025em;color:var(--text,#222)}
+.mud-ota .mud-ota-heading{position:static;inset:auto;margin:0 0 22px}.mud-ota .mud-ota-heading h2{border:0;padding:0;margin:5px 0 9px;font-size:1.5rem;letter-spacing:-.025em;color:var(--text,#222)}
 .mud-ota .mud-note{margin:0;line-height:1.7;color:var(--text-muted,var(--text-light,#777));font-size:.8rem}
 .mud-ota-kicker{font-size:.7rem;font-weight:650;letter-spacing:.08em;color:var(--brand,var(--primary,#2f7bf6))}
 .mud-ota .mud-card{padding:22px;min-width:0}.mud-ota .mud-card:hover{border-color:var(--hairline,var(--border,#e3e6ea))}
@@ -43,8 +43,10 @@ var CSS = `
 .mud-ota .mud-btn[aria-busy=true]::after{content:'';width:13px;height:13px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:mud-ota-spin .8s linear infinite}
 @keyframes mud-ota-spin{to{transform:rotate(360deg)}}
 .mud-ota [hidden]{display:none!important}
-.mud-ota-baseline-setup{margin:12px 0;padding:12px;border:1px solid var(--hairline,var(--border,#e3e6ea));border-radius:var(--radius-base,.5rem)}.mud-ota-baseline-setup>summary{cursor:pointer;font-size:.83rem;color:var(--brand,var(--primary,#2f7bf6))}.mud-ota-baseline-setup .mud-note{margin:12px 0}
-@media(prefers-reduced-motion:reduce){.mud-ota-spinner,.mud-ota .mud-btn[aria-busy=true]::after{animation-duration:2s}}
+.mud-ota-baseline-setup{margin:12px 0;padding:12px;border:1px solid var(--hairline,var(--border,#e3e6ea));border-radius:var(--radius-base,.5rem)}.mud-ota-baseline-title{font-size:.83rem;font-weight:600;color:var(--brand,var(--primary,#2f7bf6))}.mud-ota-baseline-setup .mud-note{margin:10px 0}
+.mud-ota-build-progress{margin-top:12px}.mud-ota-build-progress-label{display:flex;align-items:center;gap:10px;font-size:.84rem}.mud-ota-build-progress .mud-ota-spinner{width:16px;height:16px;border-width:2px;flex-shrink:0}.mud-ota-build-track{height:5px;margin-top:10px;overflow:hidden;border-radius:4px;background:var(--hairline,#ddd)}.mud-ota-build-fill{height:100%;background:var(--brand,var(--primary,#2f7bf6));transition:width .2s}.mud-ota-build-track[data-indeterminate=true] .mud-ota-build-fill{width:35%;animation:mud-ota-sweep 1.5s ease-in-out infinite}
+@keyframes mud-ota-sweep{from{transform:translateX(-110%)}to{transform:translateX(300%)}}
+@media(prefers-reduced-motion:reduce){.mud-ota-spinner,.mud-ota .mud-btn[aria-busy=true]::after{animation-duration:2s}.mud-ota-build-track[data-indeterminate=true] .mud-ota-build-fill{animation:none;width:100%;opacity:.4}.mud-ota-build-fill{transition:none}}
 .mud-ota-modal-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;margin-top:22px}.mud-ota-error pre{max-height:180px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
 .mud-ota-builder{margin-bottom:18px}.mud-ota-build-fields{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:16px 0}.mud-ota-build-fields select{max-width:100%;min-height:38px}.mud-ota-build-fields label{font-size:.85rem}.mud-ota-build-upload{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.mud-ota-build-upload code{overflow-wrap:anywhere;font-size:.8rem}.mud-ota-build-status{margin-top:16px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:.84rem}.mud-ota-build-baseline{margin:10px 0;line-height:1.6}
 @media(max-width:720px){.mud-ota-grid{grid-template-columns:1fr}.mud-ota .mud-card{padding:18px}.mud-ota-hero{align-items:flex-start;flex-wrap:wrap}.mud-ota-hero>.mud-btn{margin-top:0}.mud-ota .mud-ota-heading h2{font-size:1.3rem}}
@@ -65,7 +67,8 @@ return view.extend({
     load: function() {
         return Promise.all([import(L.resource('unisoc-ota/errors.js')),
             callStatus().catch(function(e) { return {load_error:e}; }),
-            callBuildStatus().catch(function(e) { return {load_error:e}; })]);
+            callBuildStatus().catch(function(e) { return {load_error:e}; }),
+            callInspectStatus('').catch(function() { return null; })]);
     },
     render: function(loaded) {
         M.injectCss(); M.localizeMenu();
@@ -82,7 +85,7 @@ return view.extend({
         var reboot=action(tr('重启设备','Reboot','Yeniden başlat'),'power');
         var buildState=loaded[2]||{job:{status:'idle'},baseline:{available:false}}, buildBusy=false, buildTick=null, shownBuild=null;
         var busy=false, watching=false, pollError=false, rebooting=false, disposed=false, pollTick, last=state, localPhase=null, pendingAction=null, pendingError=null;
-        var initialRetries=state.load_error?15:0, notice=null;
+        var initialRetries=state.load_error?15:0, notice=null, inspectionTick=null, inspectionDone=null;
         var workingTitle=E('strong'), workingDetail=E('p',{class:'mud-note'});
         var overlay=E('div',{class:'mud-ota-overlay',hidden:true,role:'status','aria-live':'polite'},[
             E('div',{class:'mud-card'},[E('span',{class:'mud-ota-spinner','aria-hidden':'true'}),workingTitle,workingDetail])]);
@@ -146,7 +149,7 @@ return view.extend({
             progress(r);
         }
         function stopWatch(){if(pollTick)poll.remove(pollTick);watching=false;}
-        this.stopWatch=function(){disposed=true;overlay.hidden=true;stopWatch();stopBuildWatch();clearNotice();};
+        this.stopWatch=function(){disposed=true;overlay.hidden=true;stopWatch();stopBuildWatch();if(inspectionTick)poll.remove(inspectionTick);inspectionTick=null;if(inspectionDone)inspectionDone();inspectionDone=null;clearNotice();};
         function interrupted(e){
             // rpcd reload removes and re-registers executable plugins after
             // committed updates. This is not a filesystem transaction failure.
@@ -213,10 +216,32 @@ return view.extend({
                 E('button',{type:'button',class:'mud-btn',click:function(){ui.hideModal();show(last);}},tr('取消','Cancel','İptal')),
                 E('button',{type:'button',class:'mud-btn '+(danger?'warn':'mud-ota-primary'),click:function(){ui.hideModal();return confirm();}},confirmLabel)])])]);
         }
-        function inspectPatch(generated){
+        function waitInspection(job){
+            error(job);
+            if(!job||!job.ticket)throw new Error('Incomplete patch inspection response');
+            if(job.status==='complete')return Promise.resolve(job.result);
+            if(job.status==='failed')throw new Error(job.error||'Patch inspection failed');
+            return new Promise(function(resolve,reject){
+                inspectionDone=resolve;
+                function finish(){if(inspectionTick)poll.remove(inspectionTick);inspectionTick=null;inspectionDone=null;}
+                inspectionTick=function(){return callInspectStatus(job.ticket).then(error).then(function(value){
+                    if(disposed)return;
+                    if(value.ticket!==job.ticket)throw new Error('Inspection was replaced; inspect this patch again');
+                    if(value.status==='complete'){finish();resolve(value.result);}
+                    else if(value.status==='failed'){finish();reject(new Error(value.error||'Patch inspection failed'));}
+                }).catch(function(e){
+                    if(disposed)return;
+                    if(messages.isConnectionError(e)){
+                        workingDetail.textContent=tr('暂时无法读取校验进度，正在重新连接；未开始刷入。','Reconnecting to inspection. No update has started.','Kontrole yeniden bağlanılıyor. Güncelleme başlamadı.');
+                    }else{finish();reject(e);}
+                });};
+                poll.add(inspectionTick,2);inspectionTick();
+            });
+        }
+        function inspectPatch(generated,existing){
             if(disposed)return Promise.resolve();
             phase('checking');
-            return (generated?callInspectGenerated():callInspect()).then(function(r){
+            return (existing?Promise.resolve(existing):callInspectBegin(generated?'generated':'upload')).then(waitInspection).then(function(r){
                 if(disposed)return;
                 phase(null);error(r);var m=r.manifest;
                 if(!m||typeof r.id!=='string'||!/^[a-f0-9]{64}$/.test(r.id))throw new Error('Incomplete patch inspection response');
@@ -277,13 +302,16 @@ return view.extend({
         var generate=action(tr('生成 .ota','Generate .ota','.ota oluştur'),'history','mud-ota-primary');
         var resultButton=action(tr('查看生成结果','View generated patch','Oluşturulan yamayı göster'),'history');
         var buildDetail=E('div',{class:'mud-ota-build-status',role:'status','aria-live':'polite'});
+        var buildProgressLabel=E('span',{id:'ota-build-progress-label'}),buildFill=E('div',{class:'mud-ota-build-fill'});
+        var buildTrack=E('div',{class:'mud-ota-build-track',id:'ota-build-progress-track',role:'progressbar','aria-label':tr('当前步骤进度','Current step progress','Mevcut adım ilerlemesi')},[buildFill]);
+        var buildProgress=E('div',{class:'mud-ota-build-progress',id:'ota-build-progress',hidden:true},[
+            E('div',{class:'mud-ota-build-progress-label'},[E('span',{class:'mud-ota-spinner','aria-hidden':'true'}),buildProgressLabel]),buildTrack]);
         var oldSize=E('code'),currentSize=E('code'),newSize=E('code'),baselineNote=E('p',{class:'mud-note mud-ota-build-baseline'});
         var oldRow=E('div',{class:'mud-ota-build-upload',id:'ota-old-release'},[oldUpload,oldSize]);
-        var baselinePanel=E('details',{class:'mud-ota-baseline-setup',id:'ota-baseline-setup'},[
-            E('summary',{},tr('首次初始化当前版本基准','Initialize current baseline','Mevcut temel sürümü başlat')),
+        var baselinePanel=E('div',{class:'mud-ota-baseline-setup',id:'ota-baseline-setup'},[
+            E('div',{class:'mud-ota-baseline-title'},tr('首次初始化当前版本基准','Initialize current baseline','Mevcut temel sürümü başlat')),
             E('p',{class:'mud-note'},tr('导入与本机当前版本对应的完整 ZIP，只需初始化一次；后续更新会自动维护原始基准。','Import the full ZIP matching the current version once. Subsequent updates maintain the clean baseline automatically.','Mevcut sürümün tam ZIP dosyasını bir kez içe aktarın. Sonraki güncellemeler temiz temel sürümü otomatik korur.')),
             E('div',{class:'mud-ota-build-upload'},[currentUpload,currentSize,baselineSave])]);
-        baselinePanel.open=false;
         function stopBuildWatch(){if(buildTick)poll.remove(buildTick);buildTick=null;}
         function buildControls(){
             if(!buildMode)return;
@@ -291,7 +319,6 @@ return view.extend({
             var locked=busy||buildBusy||rebooting||!L.hasViewPermission()||(last.recovery||{}).pending||!!buildState.load_error;
             var pair=buildMode.value==='pair';
             oldRow.hidden=!pair;baselinePanel.hidden=pair||ready;baselineNote.hidden=pair;
-            if(ready)baselinePanel.open=false;
             buildMode.disabled=locked;oldUpload.disabled=locked;newUpload.disabled=locked;currentUpload.disabled=locked;
             baselineSave.disabled=locked||!uploads['old.zip'];
             generate.disabled=locked||!uploads['new.zip']||!(pair?uploads['old.zip']:ready);
@@ -302,7 +329,7 @@ return view.extend({
             baselineNote.textContent=ready?tr('原始版本基准：','Clean release baseline: ','Temiz sürüm temeli: ')+(buildState.baseline.version||''):
                 tr('尚未保存原始版本基准，请先完成下方的首次初始化。','No clean baseline saved yet. Complete the one-time initialization below.','Temiz temel sürüm henüz kaydedilmedi. Aşağıdaki ilk kurulumu tamamlayın.');
         }
-        buildMode.onchange=function(){baselinePanel.open=false;buildControls();};
+        buildMode.onchange=buildControls;
         function downloadGenerated(){
             if(!buildState.download)return;
             var job=buildState.job||{},name=('OpenWrt-patch-'+job.base_version+'-to-'+job.target_version).replace(/[^a-zA-Z0-9._+-]/g,'_').slice(0,220)+'.ota';
@@ -324,26 +351,35 @@ return view.extend({
                     E('div',{class:'mud-ota-modal-actions'},[
                         E('button',{type:'button',class:'mud-btn',click:function(){ui.hideModal();}},tr('稍后处理','Later','Daha sonra')),
                         E('button',{type:'button',class:'mud-btn',click:downloadGenerated},tr('下载 .ota','Download .ota','.ota indir')),
-                        E('button',{type:'button',class:'mud-btn mud-ota-primary',disabled:!L.hasViewPermission(),click:function(){
-                            if(busy||buildBusy)return;ui.hideModal();return inspectPatch(true);
+                        E('button',{type:'button',class:'mud-btn mud-ota-primary',disabled:!L.hasViewPermission()||null,click:function(){
+                            if(busy||buildBusy||!L.hasViewPermission())return;ui.hideModal();return inspectPatch(true);
                         }},tr('检查并刷入','Check and apply','Kontrol et ve uygula'))])])]);
         }
         resultButton.onclick=generatedModal;
-        function paintBuild(value,notify){
+        function paintBuild(value,notify,awaitingAck){
             if(disposed)return;
             error(value);buildState=value;var job=value.job||{};
             buildBusy=job.status==='running';
-            var buildPhase=job.phase==='index'?tr('正在分析固件文件','Analyzing firmware files','Ürün yazılımı dosyaları inceleniyor'):
-                tr('正在准备生成','Preparing generation','Oluşturma hazırlanıyor');
+            var buildPhase=({queued:tr('正在准备任务','Preparing task','Görev hazırlanıyor'),open:tr('正在读取固件包','Opening firmware ZIP','Ürün yazılımı ZIP dosyası açılıyor'),verify:tr('正在校验固件文件','Verifying firmware files','Ürün yazılımı doğrulanıyor'),unpack:tr('正在解压系统镜像','Decompressing system image','Sistem görüntüsü açılıyor'),index:tr('正在分析固件文件','Analyzing firmware files','Ürün yazılımı dosyaları inceleniyor'),compare:tr('正在比较版本差异','Comparing releases','Sürümler karşılaştırılıyor'),write:tr('正在写入差分包','Writing patch archive','Yama arşivi yazılıyor'),validate:tr('正在校验差分包','Verifying patch archive','Yama arşivi doğrulanıyor'),save:tr('正在保存版本基准','Saving clean baseline','Temiz temel sürüm kaydediliyor')})[job.phase]||tr('正在准备生成','Preparing generation','Oluşturma hazırlanıyor');
+            buildProgress.hidden=!buildBusy;
+            var measured=typeof job.completed==='number'&&typeof job.total==='number'&&job.total>0;
+            var percent=measured?Math.max(0,Math.min(100,100*job.completed/job.total)):null;
+            var counts=typeof job.completed==='number'?(job.unit==='files'?job.completed+(measured?' / '+job.total:'')+tr(' 个文件',' files',' dosya'):bytes(job.completed)+(measured?' / '+bytes(job.total):'')):'';
+            buildProgressLabel.textContent=buildPhase+(counts?' · '+counts:'')+(measured?' · '+Math.floor(percent)+'%':'');
+            buildTrack.setAttribute('data-indeterminate',measured?'false':'true');
+            buildTrack.setAttribute('aria-valuetext',buildProgressLabel.textContent);
+            if(measured){buildTrack.setAttribute('aria-valuenow',Math.floor(percent));buildTrack.setAttribute('aria-valuemin',0);buildTrack.setAttribute('aria-valuemax',100);}
+            else buildTrack.removeAttribute('aria-valuenow');
+            buildFill.style.width=measured?percent+'%':'';
             buildDetail.textContent=value.load_error?tr('差分生成功能暂不可用，请更新插件后重试。','Patch generation is unavailable. Update the plugin and retry.','Yama oluşturulamıyor. Eklentiyi güncelleyip yeniden deneyin.'):
-                buildBusy?tr('正在生成，请稍候；关闭网页不会中断任务。','Generating. You may close this page; the task will continue.','Oluşturuluyor. Sayfayı kapatsanız da görev sürer.')+'\n'+buildPhase+(job.path?' · '+job.path:''):
+                buildBusy?(job.mode==='baseline'?tr('正在初始化当前版本基准，关闭网页不会中断任务。','Initializing clean baseline. Closing this page will not stop the task.','Temiz temel sürüm başlatılıyor. Sayfayı kapatmak görevi durdurmaz.'):tr('正在生成，请稍候；关闭网页不会中断任务。','Generating. You may close this page; the task will continue.','Oluşturuluyor. Sayfayı kapatsanız da görev sürer.'))+(job.path?'\n'+job.path:''):
                 job.status==='failed'?tr('生成失败：','Generation failed: ','Oluşturma başarısız: ')+(job.error||''):
                 job.status==='complete'?job.mode==='baseline'?tr('当前版本原始基准已保存。','Clean baseline saved.','Temiz temel sürüm kaydedildi.'):
                 tr('差分包已生成，可下载或检查后刷入。','Patch ready to download or check and apply.','Yama indirilebilir veya kontrol edilip uygulanabilir.'):
                 tr('选择完整固件 ZIP，生成可直接使用的 .ota。','Select full firmware ZIP files to generate a directly usable .ota.','Tam ZIP dosyalarını seçerek doğrudan kullanılabilir .ota oluşturun.');
             controls();
             if(!buildBusy&&!localPhase&&!rebooting&&value.download&&notify)show(last);
-            if(buildBusy)watchBuild();else{stopBuildWatch();if(notify&&value.download&&shownBuild!==job.id)generatedModal();}
+            if(buildBusy){if(!awaitingAck)watchBuild();}else{stopBuildWatch();if(notify&&value.download&&shownBuild!==job.id)generatedModal();}
         }
         function watchBuild(){
             if(buildTick||disposed)return;
@@ -366,6 +402,7 @@ return view.extend({
         function beginBuild(mode){
             if(busy||buildBusy)return Promise.resolve();
             clearNotice();buildBusy=true;controls();
+            paintBuild(Object.assign({},buildState,{job:{status:'running',mode:mode,phase:'queued'},download:false}),false,true);
             return callGenerate(mode).then(error).then(function(job){
                 paintBuild(Object.assign({},buildState,{job:job,download:false}),false);watchBuild();
             }).catch(function(e){
@@ -381,11 +418,12 @@ return view.extend({
             E('p',{class:'mud-note'},tr('两种方式都基于完整固件的原始文件摘要，保留现有配置、插件和数据。生成完成后可选择是否刷入。','Both modes compare clean release indexes and preserve your settings, plugins and data. Choose whether to apply after generation.','Her iki yöntem temiz sürümleri karşılaştırır; ayarlar, eklentiler ve veriler korunur. Oluşturduktan sonra uygulamayı seçebilirsiniz.')),
             E('div',{class:'mud-ota-build-fields'},[E('label',{for:'ota-build-mode'},tr('生成方式','Source','Kaynak')),buildMode]),
             baselineNote,baselinePanel,oldRow,E('div',{class:'mud-ota-build-fields mud-ota-build-upload'},[newUpload,newSize]),
-            E('div',{class:'mud-ota-actions'},[generate,resultButton]),buildDetail]);
+            E('div',{class:'mud-ota-actions'},[generate,resultButton]),buildDetail,buildProgress]);
         paintBuild(buildState,false);
         if(state.load_error){if(interrupted(state.load_error)){phase('reconnecting');watch();}else{initialRetries=0;failed(state.load_error);}}else show(state);
+        if(loaded[3]&&loaded[3].status==='running'&&!state.load_error)inspectPatch(loaded[3].source==='generated',loaded[3]);
         return E('div',{class:'mud mud-ota'},[E('style',{},CSS),overlay,
-            E('header',{class:'mud-ota-heading'},[E('span',{class:'mud-ota-kicker'},tr('系统维护','SYSTEM MAINTENANCE','SİSTEM BAKIMI')),E('h2',{},tr('系统补丁','System patches','Sistem yamaları')),E('p',{class:'mud-note'},tr('只更新变化的系统文件，保留你的插件、配置和数据。','Update changed system files while keeping your plugins, settings and data.','Eklentileri, ayarları ve verileri koruyarak değişen sistem dosyalarını güncelleyin.'))]),
+            E('div',{class:'mud-ota-heading'},[E('span',{class:'mud-ota-kicker'},tr('系统维护','SYSTEM MAINTENANCE','SİSTEM BAKIMI')),E('h2',{},tr('系统补丁','System patches','Sistem yamaları')),E('p',{class:'mud-note'},tr('只更新变化的系统文件，保留你的插件、配置和数据。','Update changed system files while keeping your plugins, settings and data.','Eklentileri, ayarları ve verileri koruyarak değişen sistem dosyalarını güncelleyin.'))]),
             E('section',{class:'mud-card mud-ota-hero'},[E('div',{class:'mud-ota-version'},[badge,version]),reboot]),
             E('div',{class:'mud-ota-grid'},[
                 E('section',{class:'mud-card'},[E('div',{class:'mud-ota-card-head'},[icon('upload'),E('h3',{},tr('导入差异更新','Import differential update','Fark güncellemesini içe aktar'))]),

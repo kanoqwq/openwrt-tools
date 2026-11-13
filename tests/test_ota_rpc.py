@@ -28,10 +28,109 @@ class RPCTests(unittest.TestCase):
             args = {'ubus_rpc_session': 'a'*32}
             if method in ('start','start_generated'): args['id'] = 'b'*64
             if method == 'generate':args['mode']='pair'
+            if method == 'inspect_begin':args['source']='upload'
+            if method == 'inspect_status':args['ticket']='c'*32
             with patch.object(self.rpc, 'dispatch', return_value={}) as dispatch:
                 self.call(method, args)
                 if method=='generate':dispatch.assert_called_once_with(method,mode='pair')
+                elif method=='inspect_begin':dispatch.assert_called_once_with(method,mode='upload')
+                elif method=='inspect_status':dispatch.assert_called_once_with(method,review_id='c'*32)
                 else:dispatch.assert_called_once_with(method, None, 'b'*64 if method in ('start','start_generated') else None)
+
+    def test_large_inspection_rpc_reply_excludes_release_index_and_runtime(self):
+        from test_ota import manifest
+        m=manifest();m.update(release_index={'files':'x'*(2<<20)},runtime={'files':'x'*(1<<20)})
+        result={'id':'a'*64,'manifest':m,'applicable':True,'required_bytes':123,'free_bytes':456,
+                'preserved':['etc/shadow'],'conflicts':[],'boot_work':True}
+        original=json.dumps(result)
+        with patch.object(self.rpc,'dispatch',return_value=result), patch.object(sys,'argv',['rpc.py','call','inspect']), \
+             patch.object(sys,'stdin',io.StringIO('{}')),redirect_stdout(io.StringIO()) as out:
+            self.rpc.main()
+        reply=json.loads(out.getvalue())
+        self.assertLess(len(out.getvalue()),4096)
+        self.assertNotIn('release_index',reply['manifest']);self.assertNotIn('runtime',reply['manifest'])
+        self.assertEqual(reply['manifest']['operations'],[None]);self.assertEqual(reply['id'],result['id'])
+        self.assertEqual(reply['preserved_count'],1);self.assertTrue(reply['applicable'])
+        self.assertEqual(json.dumps(result),original,'Summary changed verified manifest')
+        with patch.object(self.rpc,'dispatch',return_value=result),patch.object(sys,'argv',['rpc.py','inspect']),redirect_stdout(io.StringIO()) as cli:
+            self.rpc.main()
+        self.assertEqual(json.loads(cli.getvalue()),result,'Desktop/CLI lost the complete manifest')
+
+    def test_inspection_ack_does_no_bulk_work_and_inherits_admission_lock(self):
+        import fcntl
+        with tempfile.TemporaryDirectory() as d:
+            self.rpc.STATE=Path(d);self.rpc.UPLOAD=Path(d)/'upload.ota';self.rpc.UPLOAD.write_bytes(b'not read in request')
+            def launch(argv,**kwargs):
+                self.assertEqual(argv[2:4],['_inspect','upload'])
+                with (Path(d)/'job.lock').open('a') as held:
+                    with self.assertRaises(BlockingIOError):fcntl.flock(held,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                self.assertTrue(kwargs['pass_fds']);self.assertTrue(kwargs['start_new_session'])
+            with patch.object(self.rpc,'Patch') as content,patch.object(self.rpc,'ota_payload') as payload, \
+                 patch.object(self.rpc.subprocess,'Popen',side_effect=launch):
+                reply=self.rpc.dispatch('inspect_begin',mode='upload')
+                content.assert_not_called();payload.assert_not_called()
+            self.assertEqual(reply['status'],'running');self.assertEqual(len(reply['ticket']),32)
+            self.assertFalse((Path(d)/'job.json').exists());self.assertFalse((Path(d)/'journal.json').exists())
+            self.assertEqual(self.rpc.inspection_status(reply['ticket'])['status'],'failed','Dead worker was not detected')
+
+    def test_inspection_rejects_arbitrary_sources_tickets_and_pending_recovery(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.rpc.STATE=Path(d);self.rpc.UPLOAD=Path(d)/'upload.ota';self.rpc.UPLOAD.touch()
+            for source in ('/etc/shadow','../upload.ota',None):
+                with self.assertRaises(ValueError):self.rpc.begin_inspection(source)
+            for ticket in ('../../etc/shadow',9,'b'*64):
+                with self.assertRaises(ValueError):self.rpc.inspection_status(ticket)
+            (Path(d)/'journal.json').write_text(json.dumps({'status':'applying'}))
+            with patch.object(self.rpc.subprocess,'Popen') as launch:
+                with self.assertRaisesRegex(ValueError,'recovery'):self.rpc.begin_inspection('upload')
+                launch.assert_not_called()
+
+    def test_detached_inspection_checks_content_and_keeps_accounts_unchanged(self):
+        import fcntl
+        from test_ota import package
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);self.rpc.STATE=root/'etc/unisoc-ota';self.rpc.STATE.mkdir(parents=True)
+            self.rpc.UPLOAD=package(self.rpc.STATE/'upload.ota')
+            accounts=root/'etc/shadow';accounts.write_bytes(b'private password remains')
+            expected={'id':'a'*64,'manifest':{'base_version':'r1','target_version':'r2','operations':[]},'applicable':True}
+            with (self.rpc.STATE/'job.lock').open('a') as held,patch.object(self.rpc,'Engine') as engine:
+                engine.return_value.inspect.return_value=expected
+                fcntl.flock(held,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                self.rpc.inspect_worker('upload','c'*32,'',os.dup(held.fileno()))
+            value=self.rpc.inspection_status('c'*32)
+            self.assertEqual(value['status'],'complete');self.assertEqual(value['result']['id'],'a'*64)
+            self.assertTrue(self.rpc.UPLOAD.exists());self.assertEqual(accounts.read_bytes(),b'private password remains')
+            self.assertFalse((self.rpc.STATE/'journal.json').exists())
+            with (self.rpc.STATE/'job.lock').open('a') as held,patch.object(self.rpc,'Engine') as engine:
+                fcntl.flock(held,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                self.rpc.inspect_worker('upload','d'*32,'b'*64,os.dup(held.fileno()))
+                engine.return_value.inspect.assert_not_called()
+            self.assertEqual(self.rpc.inspection_status('d'*32)['status'],'failed')
+            with self.assertRaisesRegex(ValueError,'replaced'):self.rpc.inspection_status('c'*32)
+
+    def test_real_detached_inspection_finishes_without_an_apply_transaction(self):
+        import subprocess,time
+        from test_ota import package
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);state=root/'etc/unisoc-ota';state.mkdir(parents=True)
+            identity=root/'etc/e5/release.json';identity.parent.mkdir()
+            identity.write_text(json.dumps({'profile':'e5','image_version':'e5-r1','kernel_release':'6.18.54-e5-test'}))
+            (root/'usr/lib').mkdir(parents=True);(root/'usr/lib/test').write_bytes(b'old')
+            (root/'etc/shadow').write_bytes(b'private-account')
+            package(state/'upload.ota')
+            env=dict(os.environ,UNISOC_OTA_ROOT=d)
+            argv=[sys.executable,self.rpc.__file__]
+            begin=subprocess.run(argv+['call','inspect_begin'],input='{"source":"upload"}',env=env,capture_output=True,text=True,timeout=10)
+            ack=json.loads(begin.stdout);self.assertEqual(ack['status'],'running',begin.stderr)
+            for _ in range(100):
+                value=json.loads((state/'inspection.json').read_text())
+                if value['status']!='running':break
+                time.sleep(.05)
+            self.assertEqual(value['status'],'complete',value)
+            self.assertEqual(value['ticket'],ack['ticket']);self.assertTrue(value['result']['applicable'])
+            self.assertEqual((root/'usr/lib/test').read_bytes(),b'old')
+            self.assertEqual((root/'etc/shadow').read_bytes(),b'private-account')
+            self.assertFalse((state/'journal.json').exists());self.assertFalse((state/'job.json').exists())
 
     def test_other_arguments_still_rejected(self):
         with self.assertRaisesRegex(ValueError, 'Unexpected RPC'):

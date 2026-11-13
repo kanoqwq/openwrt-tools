@@ -93,13 +93,16 @@ class Builder:
                 from generator.ota_package import Release, analyze
                 from generator.release_index import snapshot, read_index
                 from baseline import current
-                last = 0
-                def progress(stage,path):
-                    nonlocal last
+                last = 0;last_stage=None
+                def progress(event):
+                    nonlocal last,last_stage
                     now=time.monotonic()
-                    if now-last>=0.4:
-                        atomic_json(self.job,{'status':'running','mode':mode,'phase':stage,'path':path})
-                        last=now
+                    phase=event['phase']
+                    key=(event.get('source'),phase,event.get('path') if phase in ('verify','unpack') else None)
+                    finished=event.get('total') is not None and event.get('completed')==event['total']
+                    if key!=last_stage or now-last>=0.4 or finished:
+                        atomic_json(self.job,dict(status='running',mode=mode,**event))
+                        last=now;last_stage=key
                 with tempfile.TemporaryDirectory(prefix='.build-',dir=self.home) as folder:
                     folder=Path(folder)
                     # Release's E5 scratch image stays beside this uploaded
@@ -111,7 +114,8 @@ class Builder:
                             raise ValueError('Full firmware upload changed')
                         path.rename(folder/name)
                     if mode=='baseline':
-                        with Release(folder/'old.zip',progress) as release:
+                        with Release(folder/'old.zip',details=progress) as release:
+                            progress({'phase':'save'})
                             index=snapshot(release)
                         # This validates only the clean package identity, never
                         # reads live user file contents into the baseline.
@@ -125,8 +129,9 @@ class Builder:
                         old=self.baseline
                     else:
                         old=folder/'old.zip'
-                    result=analyze(old,folder/'new.zip',folder/'update.ota',progress,
-                                   base_index_output=folder/'base.json' if mode=='pair' else None)
+                    result=analyze(old,folder/'new.zip',folder/'update.ota',
+                                   base_index_output=folder/'base.json' if mode=='pair' else None,details=progress)
+                    progress({'phase':'validate'})
                     with Patch(folder/'update.ota') as patch:
                         summary={'id':patch.id,'base_version':patch.manifest['base_version'],
                                  'target_version':patch.manifest['target_version'],'files':result['files'],

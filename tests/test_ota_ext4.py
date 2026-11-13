@@ -52,7 +52,17 @@ class Ext4Tests(unittest.TestCase):
                 (files/'device-profile.json').write_text(json.dumps({'profile':'e5'}))
                 (files/'RELEASE.json').write_text(json.dumps(dict(profile='e5',image_version='e5-r'+str(i),kernel_release='6.18.54-e5-test',openwrt='25.12.5')))
                 (files/'SHA256SUMS').write_text(''.join(hashlib.sha256((files/n).read_bytes()).hexdigest()+'  files/'+n+'\n' for n in ('boot.img','openwrt.ext4.gz')))
-            out=d/'patch.ota';result=analyze(d/'1',d/'2',out,index_directory=d/'indexes')
+            events=[]
+            out=d/'patch.ota';result=analyze(d/'1',d/'2',out,index_directory=d/'indexes',details=events.append)
+            self.assertEqual(result['manifest'],analyze(d/'1',d/'2')['manifest'])
+            self.assertTrue({'verify','unpack','index','compare','write','validate'} <= {e['phase'] for e in events})
+            unpack=[e for e in events if e['phase']=='unpack']
+            self.assertTrue(unpack)
+            self.assertEqual(unpack[0]['completed'],0)
+            self.assertEqual(unpack[-1]['completed'],unpack[-1]['total'])
+            self.assertTrue(all(0<=e['completed']<=e['total'] for e in unpack))
+            index=[e for e in events if e['phase']=='index']
+            self.assertTrue(all(e['total'] is None for e in index),'Unknown file count must not show a fake percentage')
             self.assertTrue(result['can_export'],result['blockers'])
             self.assertEqual([o['path'] for o in result['manifest']['operations']],['usr/lib/example'])
             with Patch(out) as patch:

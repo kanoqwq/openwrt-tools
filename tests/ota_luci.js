@@ -9,13 +9,17 @@ const idle = () => ({identity:{version:'test-r2'},transaction:{id:'a'.repeat(64)
 function fixture(write=true, initial=idle(), locale="en", initialBuild={job:{status:'idle'},baseline:{available:false},uploads:{}}) {
     const state={calls:[],arguments:[],declarations:[],notifications:[],ticks:new Set(),modal:[],writable:write,status:initial,rejectStart:false,rejectInspect:null,rejectRollback:false,rejectStatus:false,rejectReboot:null,reconnects:0,rollbackCheck:{available:true,reason:'ready',conflicts:[]}};
     state.buildStatus=initialBuild;state.downloads=[];state.uploadPaths=[];
-    const E=(tag,attrs={},children=[])=>({tag,...attrs,children,appendChild(node){this.children.push(node);},setAttribute(name,value){this[name]=value;},submit(){state.downloads.push(this);},remove(){}});
+    const E=(tag,attrs={},children=[])=>({tag,style:{},...attrs,
+        // LuCI creates boolean HTML attributes by presence, even for false.
+        disabled:attrs.disabled!=null,hidden:attrs.hidden!=null,children,
+        appendChild(node){this.children.push(node);},setAttribute(name,value){this[name]=value;},removeAttribute(name){delete this[name];},submit(){state.downloads.push(this);},remove(){}});
     const rpc={getSessionID:()=>'test-session',declare:options=>{state.declarations.push(options);const {method}=options;return (...args)=>{
         state.calls.push(method);
         state.arguments.push([method,args]);
         if(method==='status')return state.statusError?Promise.reject(Error(state.statusError)):state.rejectStatus?Promise.reject(Error('offline')):Promise.resolve(state.status);
-        if(method==='inspect'&&state.rejectInspect)return Promise.reject(Error(state.rejectInspect));
-        if(method==='inspect'||method==='inspect_generated')return state.inspectPromise||Promise.resolve(state.inspection||{id:'a'.repeat(64),applicable:true,manifest:{base_version:'r1',target_version:'r2',operations:[]}});
+        if(method==='inspect_begin'&&state.rejectInspect)return Promise.reject(Error(state.rejectInspect));
+        if(method==='inspect_begin')return (state.inspectPromise||Promise.resolve(state.inspection||{id:'a'.repeat(64),applicable:true,manifest:{base_version:'r1',target_version:'r2',operations:[]}})).then(result=>state.inspectionJob||{status:'complete',ticket:'c'.repeat(32),result});
+        if(method==='inspect_status')return state.inspectionError?Promise.reject(Error(state.inspectionError)):Promise.resolve(state.inspectionJob||{status:'idle'});
         if(method==='build_status')return state.buildError?Promise.reject(Error(state.buildError)):Promise.resolve(state.buildStatus);
         if(method==='generate')return state.generateError?Promise.reject(Error(state.generateError)):Promise.resolve({status:'running',mode:args[0],phase:'queued'});
         if(method==='start'&&state.rejectStart)return Promise.reject(Error('start rejected'));
@@ -225,13 +229,15 @@ async function main(){
         assert.match(gen.modalTitle,/Apply it now/);
         assert.equal(gen.ticks.size,0,'Finished generation kept polling');
         assert(gen.modalButton('Later'));assert(gen.modalButton('Download .ota'));assert(gen.modalButton('Check and apply'));
+        assert(!gen.modalButton('Check and apply').disabled,'Boolean disabled=false attribute disabled the result action');
         gen.modalButton('Download .ota').click();
         assert.equal(gen.downloads.length,1);
         assert.equal(gen.downloads[0].action,'/cgi-bin/cgi-download');
         assert(gen.downloads[0].children.some(c=>c.name==='path'&&c.value==='/etc/unisoc-ota/builder/update.ota'));
         assert(gen.downloads[0].children.some(c=>c.name==='sessionid'&&c.value==='test-session'));
         await gen.modalButton('Check and apply').click();
-        assert(gen.calls.includes('inspect_generated'));
+        assert(gen.arguments.some(([method,args])=>method==='inspect_begin'&&args[0]==='generated'));
+        assert(!gen.modalButton('Apply patch').disabled);
         assert(!gen.calls.includes('start_generated'),'Inspection skipped explicit confirmation');
         gen.modalButton('Cancel').click();assert(!gen.calls.includes('start_generated'));
         gen.button('View generated patch').onclick();await gen.modalButton('Check and apply').click();
@@ -242,8 +248,7 @@ async function main(){
     const needsBase=fixture();assert(needsBase.button('Generate .ota').disabled);
     needsBase.buildStatus={job:{status:'idle'},baseline:{available:false},uploads:{'old.zip':10}};
     assert(needsBase.node('ota-old-release').hidden,'Current mode exposed an old-release input');
-    assert(!needsBase.node('ota-baseline-setup').hidden);assert(!needsBase.node('ota-baseline-setup').open,'First-use setup must start collapsed');
-    needsBase.node('ota-baseline-setup').open=true;
+    assert(!needsBase.node('ota-baseline-setup').hidden);assert.equal(needsBase.node('ota-baseline-setup').tag,'div','First-use setup must remain expanded');
     await needsBase.button('Import current full ZIP').onclick();
     assert.equal(needsBase.uploadPaths[0],'/etc/unisoc-ota/builder/old.zip');
     assert(!needsBase.button('Save current baseline').disabled);
@@ -261,7 +266,7 @@ async function main(){
         assert(!page.node('ota-old-release').hidden);assert(page.node('ota-baseline-setup').hidden);
         page.buildMode().value='current';page.buildMode().onchange();
         assert(page.node('ota-old-release').hidden);assert.equal(page.node('ota-baseline-setup').hidden,ready);
-        assert(!page.node('ota-baseline-setup').open);
+        assert.equal(page.node('ota-baseline-setup').tag,'div');
     }
     assert.match(source,/\.mud-ota \[hidden\]\{display:none!important\}/,'Theme flex rules must not override hidden controls');
     for(const [locale,labels] of [['en',['Import patch','Upload new full ZIP']],['zh',['导入差异包','上传新版完整 ZIP']],['tr',['Yama içe aktar','Yeni tam ZIP yükle']]]){
@@ -273,7 +278,7 @@ async function main(){
                 assert(!page.button(label).disabled,'Cancellation left controls locked');
             }
         }
-        assert(!page.calls.includes('inspect'));assert(!page.calls.includes('generate'));assert.equal(page.ticks.size,0);
+        assert(!page.calls.includes('inspect_begin'));assert(!page.calls.includes('generate'));assert.equal(page.ticks.size,0);
     }
     const notices=fixture();
     for(const reason of ['Actual upload failure','Different upload failure','XHR request aborted by browser']){
@@ -289,6 +294,35 @@ async function main(){
     resumed.buildError='offline';for(const tick of [...resumed.ticks])await tick();
     assert(resumed.button('Import patch').disabled);assert.equal(resumed.notifications.length,0);
     resumed.dispose();assert.equal(resumed.ticks.size,0);
+    const checking=fixture();checking.inspectionJob={status:'running',ticket:'c'.repeat(32),source:'upload'};
+    const checkingTask=checking.button('Import patch').onclick();await checking.flush();
+    assert(checking.overlay().hidden===false);assert(checking.button('Import patch').disabled);
+    assert.equal(checking.ticks.size,1);assert(!checking.calls.includes('inspect'),'Synchronous inspection still used');
+    checking.inspectionError='XHR request timed out';for(const tick of [...checking.ticks])await tick();
+    assert.equal(checking.notifications.length,0,'Temporary inspection outage was treated as update failure');
+    checking.inspectionError=null;checking.inspectionJob={...checking.inspectionJob,status:'complete',result:{id:'a'.repeat(64),applicable:true,manifest:{base_version:'r1',target_version:'r2',operations:[]}}};
+    for(const tick of [...checking.ticks])await tick();await checkingTask;
+    assert(checking.modalButton('Apply patch'));assert.equal(checking.ticks.size,0);
+    assert(!checking.calls.includes('start'),'Inspection applied files without confirmation');
+    const disposedCheck=fixture();disposedCheck.inspectionJob={status:'running',ticket:'c'.repeat(32)};
+    const disposedTask=disposedCheck.button('Import patch').onclick();await disposedCheck.flush();disposedCheck.dispose();await disposedTask;
+    assert.equal(disposedCheck.ticks.size,0);assert.equal(disposedCheck.modal.length,0);
+    const progressPage=fixture(true,idle(),'en',{job:{status:'running',mode:'baseline',phase:'verify',completed:512,total:1024,unit:'bytes',path:'files/root.gz'},baseline:{available:false},uploads:{}});
+    assert(!progressPage.node('ota-build-progress').hidden);
+    assert.match(progressPage.node('ota-build-progress-label').textContent,/512 B.*1.0 KiB.*50%/);
+    assert.equal(progressPage.node('ota-build-progress-track')['aria-valuenow'],50);
+    progressPage.buildStatus={job:{status:'running',mode:'baseline',phase:'index',completed:312,unit:'files'},baseline:{available:false},uploads:{}};
+    for(const tick of [...progressPage.ticks])await tick();
+    assert.match(progressPage.node('ota-build-progress-label').textContent,/312 files/);
+    assert.equal(progressPage.node('ota-build-progress-track')['data-indeterminate'],'true');
+    assert.equal(progressPage.node('ota-build-progress-track')['aria-valuenow'],undefined,'Index count shown as a fabricated percentage');
+    progressPage.buildStatus={job:{status:'complete',mode:'baseline'},baseline:{available:true},uploads:{}};
+    for(const tick of [...progressPage.ticks])await tick();
+    assert(progressPage.node('ota-build-progress').hidden);assert.equal(progressPage.ticks.size,0);
+    assert(!source.includes("E('header',{class:'mud-ota-heading'}"),'Aurora applies site navigation styles to header elements');
+    const roResult=fixture(false,idle(),'en',{job:{status:'complete',id:'a'.repeat(64),base_version:'r1',target_version:'r2'},baseline:{available:true},download:true});
+    roResult.button('View generated patch').onclick();assert(roResult.modalButton('Check and apply').disabled);
+    roResult.modalButton('Check and apply').click();assert(!roResult.calls.includes('inspect_begin'),'Read-only result action started inspection');
     const readonly=fixture(false);assert(readonly.button('Generate .ota').disabled);assert(readonly.button('Upload new full ZIP').disabled);
     assert.equal(fixture().ticks.size,0,'Idle page kept polling');
     console.log('PASS LuCI update recovery, ZIP import, both generators, result modal, download, explicit review/apply, permissions and no idle polling');
