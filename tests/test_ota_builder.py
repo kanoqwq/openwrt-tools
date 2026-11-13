@@ -174,5 +174,18 @@ class BuilderTests(unittest.TestCase):
         result=subprocess.run([sys.executable,'-S','-c',code,str(core)],capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)
 
+    def test_native_generator_inventory_excludes_bytecode_and_directories(self):
+        from build import generator_data_args
+        args=generator_data_args()
+        self.assertTrue(args)
+        for flag,item in zip(args[::2],args[1::2]):
+            self.assertEqual(flag,'--add-data')
+            source,destination=item.rsplit(os.pathsep,1)
+            path=Path(source)
+            self.assertTrue(path.is_file(),source)
+            self.assertNotIn('__pycache__',path.parts)
+            self.assertNotEqual(path.suffix,'.pyc')
+            self.assertEqual(destination,'generator')
+
 
 if __name__=='__main__':unittest.main()

@@ -12,7 +12,7 @@ import urllib.request
 import zipfile
 
 from package_gui import sources, digest
-from resources import asset
+from resources import asset, ASSETS
 
 HERE = Path(__file__).resolve().parent
 
@@ -29,6 +29,13 @@ def native_platform(system=None, machine=None):
     if system == 'win32' and machine.lower() in ('amd64', 'x86_64'):
         return 'windows-x64'
     raise ValueError('Build natively on Windows x64 or Apple Silicon macOS (Rust 1.90, Node and Python required).')
+
+
+def generator_data_args():
+    # Directory collection also picks up Linux/macOS bytecode left by tests.
+    # Freeze only the source-owned inventory shared with other build paths.
+    return [part for name in sorted(ASSETS) if name.startswith('generator/')
+            for part in ('--add-data',str(asset(name))+os.pathsep+str(Path(name).parent))]
 
 
 def main():
@@ -62,7 +69,7 @@ def main():
         '--add-data', str(asset('uploads.py'))+os.pathsep+'.',
         '--add-data', str(asset('baseline.py'))+os.pathsep+'.',
         '--add-data', str(asset('builder.py'))+os.pathsep+'.',
-        '--add-data', str(asset('generator/__init__.py').parent)+os.pathsep+'generator',
+        *generator_data_args(),
         '--add-data', str(asset('unisoc-ota.js'))+os.pathsep+'.',
         '--add-data', str(asset('errors.js'))+os.pathsep+'.',
         '--add-data', str(asset('unisoc-ota.json'))+os.pathsep+'.',
