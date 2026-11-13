@@ -27,13 +27,15 @@ function fixture(write=true, initial=idle(), locale="en", initialBuild={job:{sta
         if(method==='rollback'&&state.rejectRollback)return Promise.reject(Error('rollback rejected'));
         return Promise.resolve({status:'running'});
     }}};
-    const ui={uploadFile:(name)=>{state.uploadPaths.push(name);state.uploads=(state.uploads||0)+1;return state.uploadPromise||Promise.resolve();},showModal:(title,nodes)=>{state.modalTitle=title;state.modal=nodes;},hideModal:()=>{state.modal=[];},addNotification:(_a,node)=>state.notifications.push(node.children),awaitReconnect:()=>{state.reconnects++;}};
-    const view=new Function('view','rpc','ui','poll','E','document','L','M',source)({extend:v=>v},rpc,ui,{add:fn=>state.ticks.add(fn),remove:fn=>state.ticks.delete(fn)},E,{documentElement:{lang:'en'},body:{appendChild:()=>{}}},{env:{cgi_base:'/cgi-bin'},hasViewPermission:()=>state.writable},{injectCss:()=>{state.themeInjected=true;},localizeMenu:()=>{},uiLanguage:()=>locale});
+    const ui={uploadFile:(name)=>{state.uploadPaths.push(name);state.uploads=(state.uploads||0)+1;return state.uploadPromise||Promise.resolve();},showModal:(title,nodes)=>{state.modalTitle=title;state.modal=nodes;},hideModal:()=>{state.modal=[];},addNotification:(_a,node)=>{const value=node.children;state.notifications.push(value);return {remove:()=>{const i=state.notifications.indexOf(value);if(i>=0)state.notifications.splice(i,1);}};},awaitReconnect:()=>{state.reconnects++;}};
+    state.cancelText=locale==='zh'?'上传已被取消':locale==='tr'?'Yükleme iptal edildi':'Upload has been cancelled';
+    const view=new Function('view','rpc','ui','poll','E','document','L','M','_',source)({extend:v=>v},rpc,ui,{add:fn=>state.ticks.add(fn),remove:fn=>state.ticks.delete(fn)},E,{documentElement:{lang:'en'},body:{appendChild:()=>{}}},{env:{cgi_base:'/cgi-bin'},hasViewPermission:()=>state.writable},{injectCss:()=>{state.themeInjected=true;},localizeMenu:()=>{},uiLanguage:()=>locale},text=>text==='Upload has been cancelled'?state.cancelText:text);
     const all=nodes=>nodes.flatMap(n=>!n||typeof n!=='object'?[]:[n,...all(Array.isArray(n.children)?n.children:[])]);
     const root=view.render([messages,state.status,state.buildStatus]);
     state.button=name=>all([root,...state.modal]).find(n=>n.tag==='button'&&(n['aria-label']===name||n.children===name));
     state.modalButton=name=>all(state.modal).find(n=>n.tag==='button'&&n.children===name);
     state.buildMode=()=>all([root]).find(n=>n.id==='ota-build-mode');
+    state.node=id=>all([root]).find(n=>n.id===id);
     state.text=()=>all([root]).map(n=>n.textContent||'').join(' ');state.root=root;
     state.overlay=()=>all([root]).find(n=>n.class==='mud-ota-overlay');
     state.dispose=()=>view.unload();
@@ -239,7 +241,10 @@ async function main(){
     }
     const needsBase=fixture();assert(needsBase.button('Generate .ota').disabled);
     needsBase.buildStatus={job:{status:'idle'},baseline:{available:false},uploads:{'old.zip':10}};
-    await needsBase.button('Upload old full ZIP').onclick();
+    assert(needsBase.node('ota-old-release').hidden,'Current mode exposed an old-release input');
+    assert(!needsBase.node('ota-baseline-setup').hidden);assert(!needsBase.node('ota-baseline-setup').open,'First-use setup must start collapsed');
+    needsBase.node('ota-baseline-setup').open=true;
+    await needsBase.button('Import current full ZIP').onclick();
     assert.equal(needsBase.uploadPaths[0],'/etc/unisoc-ota/builder/old.zip');
     assert(!needsBase.button('Save current baseline').disabled);
     await needsBase.button('Save current baseline').onclick();
@@ -247,6 +252,38 @@ async function main(){
     for(const tick of [...needsBase.ticks])await tick();
     assert(!needsBase.modalButton('Check and apply'),'Baseline import offered a meaningless flash');
     assert.equal(needsBase.ticks.size,0);
+    assert(needsBase.node('ota-baseline-setup').hidden,'Saved baseline still showed first-use setup');
+    assert(needsBase.node('ota-old-release').hidden);
+    for(const ready of [false,true]){
+        const page=fixture(true,idle(),'en',{job:{status:'idle'},baseline:{available:ready,version:'r1'},uploads:{}});
+        assert(page.node('ota-old-release').hidden);
+        page.buildMode().value='pair';page.buildMode().onchange();
+        assert(!page.node('ota-old-release').hidden);assert(page.node('ota-baseline-setup').hidden);
+        page.buildMode().value='current';page.buildMode().onchange();
+        assert(page.node('ota-old-release').hidden);assert.equal(page.node('ota-baseline-setup').hidden,ready);
+        assert(!page.node('ota-baseline-setup').open);
+    }
+    assert.match(source,/\.mud-ota \[hidden\]\{display:none!important\}/,'Theme flex rules must not override hidden controls');
+    for(const [locale,labels] of [['en',['Import patch','Upload new full ZIP']],['zh',['导入差异包','上传新版完整 ZIP']],['tr',['Yama içe aktar','Yeni tam ZIP yükle']]]){
+        const page=fixture(true,idle(),locale);
+        for(const label of labels){
+            for(let i=0;i<2;i++){
+                page.uploadPromise=Promise.reject(Error(page.cancelText));await page.button(label).onclick();
+                assert.equal(page.notifications.length,0,'User cancellation became an error: '+locale);
+                assert(!page.button(label).disabled,'Cancellation left controls locked');
+            }
+        }
+        assert(!page.calls.includes('inspect'));assert(!page.calls.includes('generate'));assert.equal(page.ticks.size,0);
+    }
+    const notices=fixture();
+    for(const reason of ['Actual upload failure','Different upload failure','XHR request aborted by browser']){
+        notices.uploadPromise=Promise.reject(Error(reason));await notices.button('Import patch').onclick();
+        assert.equal(notices.notifications.length,1,'Real failures accumulated or were hidden');
+    }
+    notices.uploadPromise=Promise.reject(Error('Upload has been cancelled'));await notices.button('Import patch').onclick();
+    assert.equal(notices.notifications.length,0,'New attempt retained an old error');
+    notices.uploadPromise=Promise.reject(Error('Real full-ZIP upload failure'));await notices.button('Upload new full ZIP').onclick();
+    assert.equal(notices.notifications.length,1);notices.dispose();assert.equal(notices.notifications.length,0,'Page-owned notification leaked after unload');
     const resumed=fixture(true,idle(),'en',{job:{status:'running'},baseline:{available:false},uploads:{}});
     assert(resumed.button('Import patch').disabled);assert.equal(resumed.ticks.size,1);
     resumed.buildError='offline';for(const tick of [...resumed.ticks])await tick();

@@ -42,6 +42,8 @@ var CSS = `
 .mud-ota-spinner{display:inline-block;width:30px;height:30px;box-sizing:border-box;border:3px solid var(--hairline,#ddd);border-top-color:var(--brand,var(--primary,#2f7bf6));border-radius:50%;animation:mud-ota-spin .8s linear infinite}
 .mud-ota .mud-btn[aria-busy=true]::after{content:'';width:13px;height:13px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:mud-ota-spin .8s linear infinite}
 @keyframes mud-ota-spin{to{transform:rotate(360deg)}}
+.mud-ota [hidden]{display:none!important}
+.mud-ota-baseline-setup{margin:12px 0;padding:12px;border:1px solid var(--hairline,var(--border,#e3e6ea));border-radius:var(--radius-base,.5rem)}.mud-ota-baseline-setup>summary{cursor:pointer;font-size:.83rem;color:var(--brand,var(--primary,#2f7bf6))}.mud-ota-baseline-setup .mud-note{margin:12px 0}
 @media(prefers-reduced-motion:reduce){.mud-ota-spinner,.mud-ota .mud-btn[aria-busy=true]::after{animation-duration:2s}}
 .mud-ota-modal-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;margin-top:22px}.mud-ota-error pre{max-height:180px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
 .mud-ota-builder{margin-bottom:18px}.mud-ota-build-fields{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:16px 0}.mud-ota-build-fields select{max-width:100%;min-height:38px}.mud-ota-build-fields label{font-size:.85rem}.mud-ota-build-upload{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.mud-ota-build-upload code{overflow-wrap:anywhere;font-size:.8rem}.mud-ota-build-status{margin-top:16px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:.84rem}.mud-ota-build-baseline{margin:10px 0;line-height:1.6}
@@ -80,7 +82,7 @@ return view.extend({
         var reboot=action(tr('重启设备','Reboot','Yeniden başlat'),'power');
         var buildState=loaded[2]||{job:{status:'idle'},baseline:{available:false}}, buildBusy=false, buildTick=null, shownBuild=null;
         var busy=false, watching=false, pollError=false, rebooting=false, disposed=false, pollTick, last=state, localPhase=null, pendingAction=null, pendingError=null;
-        var initialRetries=state.load_error?15:0;
+        var initialRetries=state.load_error?15:0, notice=null;
         var workingTitle=E('strong'), workingDetail=E('p',{class:'mud-note'});
         var overlay=E('div',{class:'mud-ota-overlay',hidden:true,role:'status','aria-live':'polite'},[
             E('div',{class:'mud-card'},[E('span',{class:'mud-ota-spinner','aria-hidden':'true'}),workingTitle,workingDetail])]);
@@ -105,10 +107,12 @@ return view.extend({
                 localPhase==='checking'?tr('检查完成后会展示更新内容，请确认后再应用。','Review the changes after checks finish, then confirm to apply.','Kontrol bitince değişiklikleri inceleyip uygulamayı onaylayın.'):
                 tr('正在处理，请稍候。更新开始后关闭网页不会中断任务。','Please wait. Once started, the update continues even if you close this page.','Lütfen bekleyin. Başladıktan sonra sayfa kapatılsa da güncelleme sürer.');
         }
-        function phase(value){if(disposed)return;localPhase=value;if(!value){show(last);return;}busy=true;progress(last);controls();detail.textContent=phaseTitle(value);badge.setAttribute('data-state','running');badge.textContent=phaseTitle(value);}
+        function phase(value){if(disposed)return;localPhase=value;if(!value){show(last);return;}clearNotice();busy=true;progress(last);controls();detail.textContent=phaseTitle(value);badge.setAttribute('data-state','running');badge.textContent=phaseTitle(value);}
         function errorNode(e){var info=messages.explainError(e,!zh);if(/Incomplete patch inspection response/.test(info.details))info.message=tr('补丁检查结果不完整，未开始更新。请更新插件后重新检查。','Patch inspection is incomplete. No update started. Update the plugin and inspect again.','Yama kontrolü eksik. Güncelleme başlamadı. Eklentiyi güncelleyip yeniden kontrol edin.');if(/Inspect this patch|Upload differs/.test(info.details))info.message=tr('补丁检查结果已失效或文件已变化，未开始写入。请重新导入并检查。','The review is stale or the file changed. No writes started. Import and inspect it again.','Kontrol geçersiz veya dosya değişti. Yazma başlamadı. Yeniden içe aktarıp kontrol edin.');if(/There is no item named ['"]manifest\.json['"]/.test(info.details))info.message=tr('请选择有效的 update.ota 或包含它的更新 ZIP；完整固件请使用下方的差分生成功能。','Select a valid update.ota or an update ZIP containing it. Use the generator below for full firmware ZIPs.','Geçerli update.ota veya onu içeren güncelleme ZIP dosyasını seçin.');if(/ZIP contains no OTA/.test(info.details))info.message=tr('此 ZIP 不包含 .ota；完整固件请使用下方的差分生成功能。','This ZIP has no .ota. For full firmware, use the generator below.','Bu ZIP .ota içermiyor. Tam sürüm için aşağıdaki oluşturucuyu kullanın.');if(/multiple OTA/.test(info.details))info.message=tr('ZIP 中有多个 .ota，请单独选择需要的补丁。','This ZIP contains multiple .ota files. Select the desired patch directly.','ZIP birden fazla .ota içeriyor. İstenen yamayı doğrudan seçin.');if(/Recovery copy was deleted/.test(info.details))info.message=tr('恢复副本已删除，无法再撤销这次补丁。当前系统不受影响。','The recovery copy was deleted. This patch can no longer be undone; the current system is unaffected.','Kurtarma kopyası silindi. Son yama artık geri alınamaz.');return E('div',{class:'mud-ota-error'},[
             E('p',{},info.message),E('details',{},[E('summary',{},tr('技术详情','Technical details','Teknik ayrıntılar')),E('pre',{},info.details)])]);}
-        function failed(e){if(!disposed)ui.addNotification(null,errorNode(e),'error');}
+        function clearNotice(){if(notice)notice.remove();notice=null;}
+        function failed(e){if(!disposed){clearNotice();notice=ui.addNotification(null,errorNode(e),'error');}}
+        function cancelledUpload(e){var text=String(e&&e.message||e||'');return text==='Upload has been cancelled'||typeof _==='function'&&text===_('Upload has been cancelled');}
         function controls(){
             var info=last.recovery||{}, writable=!busy&&!buildBusy&&!rebooting&&!info.pending&&L.hasViewPermission();
             button.disabled=!writable;
@@ -142,7 +146,7 @@ return view.extend({
             progress(r);
         }
         function stopWatch(){if(pollTick)poll.remove(pollTick);watching=false;}
-        this.stopWatch=function(){disposed=true;overlay.hidden=true;stopWatch();stopBuildWatch();};
+        this.stopWatch=function(){disposed=true;overlay.hidden=true;stopWatch();stopBuildWatch();clearNotice();};
         function interrupted(e){
             // rpcd reload removes and re-registers executable plugins after
             // committed updates. This is not a filesystem transaction failure.
@@ -230,7 +234,7 @@ return view.extend({
         button.onclick=function(){
             if(busy||buildBusy)return;
             phase('upload');
-            return ui.uploadFile('/etc/unisoc-ota/upload.ota',button).then(function(){return inspectPatch(false);}).catch(function(e){phase(null);failed(e);});
+            return ui.uploadFile('/etc/unisoc-ota/upload.ota',button).then(function(){return inspectPatch(false);}).catch(function(e){phase(null);if(!cancelledUpload(e))failed(e);});
         };
         rollback.onclick=function(){
             if(busy)return;phase('recovery');
@@ -268,29 +272,37 @@ return view.extend({
         buildMode.value='current';
         var oldUpload=action(tr('上传旧版完整 ZIP','Upload old full ZIP','Eski tam ZIP yükle'),'upload');
         var newUpload=action(tr('上传新版完整 ZIP','Upload new full ZIP','Yeni tam ZIP yükle'),'upload');
+        var currentUpload=action(tr('导入当前版本完整 ZIP','Import current full ZIP','Mevcut tam ZIP dosyasını içe aktar'),'upload');
         var baselineSave=action(tr('保存当前版本基准','Save current baseline','Mevcut temel sürümü kaydet'),'history');
         var generate=action(tr('生成 .ota','Generate .ota','.ota oluştur'),'history','mud-ota-primary');
         var resultButton=action(tr('查看生成结果','View generated patch','Oluşturulan yamayı göster'),'history');
         var buildDetail=E('div',{class:'mud-ota-build-status',role:'status','aria-live':'polite'});
-        var oldSize=E('code'),newSize=E('code'),baselineNote=E('p',{class:'mud-note mud-ota-build-baseline'});
-        var oldRow=E('div',{class:'mud-ota-build-upload'},[oldUpload,oldSize,baselineSave]);
+        var oldSize=E('code'),currentSize=E('code'),newSize=E('code'),baselineNote=E('p',{class:'mud-note mud-ota-build-baseline'});
+        var oldRow=E('div',{class:'mud-ota-build-upload',id:'ota-old-release'},[oldUpload,oldSize]);
+        var baselinePanel=E('details',{class:'mud-ota-baseline-setup',id:'ota-baseline-setup'},[
+            E('summary',{},tr('首次初始化当前版本基准','Initialize current baseline','Mevcut temel sürümü başlat')),
+            E('p',{class:'mud-note'},tr('导入与本机当前版本对应的完整 ZIP，只需初始化一次；后续更新会自动维护原始基准。','Import the full ZIP matching the current version once. Subsequent updates maintain the clean baseline automatically.','Mevcut sürümün tam ZIP dosyasını bir kez içe aktarın. Sonraki güncellemeler temiz temel sürümü otomatik korur.')),
+            E('div',{class:'mud-ota-build-upload'},[currentUpload,currentSize,baselineSave])]);
+        baselinePanel.open=false;
         function stopBuildWatch(){if(buildTick)poll.remove(buildTick);buildTick=null;}
         function buildControls(){
             if(!buildMode)return;
             var ready=(buildState.baseline||{}).available===true,uploads=buildState.uploads||{};
             var locked=busy||buildBusy||rebooting||!L.hasViewPermission()||(last.recovery||{}).pending||!!buildState.load_error;
             var pair=buildMode.value==='pair';
-            oldRow.hidden=!pair&&ready;baselineSave.hidden=pair||ready;
-            buildMode.disabled=locked;oldUpload.disabled=locked;newUpload.disabled=locked;
+            oldRow.hidden=!pair;baselinePanel.hidden=pair||ready;baselineNote.hidden=pair;
+            if(ready)baselinePanel.open=false;
+            buildMode.disabled=locked;oldUpload.disabled=locked;newUpload.disabled=locked;currentUpload.disabled=locked;
             baselineSave.disabled=locked||!uploads['old.zip'];
             generate.disabled=locked||!uploads['new.zip']||!(pair?uploads['old.zip']:ready);
             resultButton.hidden=!buildState.download;resultButton.disabled=locked;
             oldSize.textContent=uploads['old.zip']?bytes(uploads['old.zip']):tr('未上传','Not uploaded','Yüklenmedi');
+            currentSize.textContent=oldSize.textContent;
             newSize.textContent=uploads['new.zip']?bytes(uploads['new.zip']):tr('未上传','Not uploaded','Yüklenmedi');
             baselineNote.textContent=ready?tr('原始版本基准：','Clean release baseline: ','Temiz sürüm temeli: ')+(buildState.baseline.version||''):
-                tr('首次使用请上传与当前系统对应的完整 ZIP，保存原始版本基准；不会读取你改过的系统文件。','First import the full ZIP matching your current system to save a clean baseline. Modified live files are never used as the baseline.','İlk kullanımda mevcut sistemin tam ZIP dosyasını içe aktarın. Değiştirilmiş canlı dosyalar temel olarak kullanılmaz.');
+                tr('尚未保存原始版本基准，请先完成下方的首次初始化。','No clean baseline saved yet. Complete the one-time initialization below.','Temiz temel sürüm henüz kaydedilmedi. Aşağıdaki ilk kurulumu tamamlayın.');
         }
-        buildMode.onchange=buildControls;
+        buildMode.onchange=function(){baselinePanel.open=false;buildControls();};
         function downloadGenerated(){
             if(!buildState.download)return;
             var job=buildState.job||{},name=('OpenWrt-patch-'+job.base_version+'-to-'+job.target_version).replace(/[^a-zA-Z0-9._+-]/g,'_').slice(0,220)+'.ota';
@@ -343,16 +355,17 @@ return view.extend({
         }
         function uploadFull(name,target){
             if(busy||buildBusy)return Promise.resolve();
-            buildBusy=true;controls();
+            clearNotice();buildBusy=true;controls();
             return ui.uploadFile('/etc/unisoc-ota/builder/'+name,target).then(function(){
                 return callBuildStatus();
-            }).then(function(r){paintBuild(r,false);}).catch(function(e){buildBusy=false;controls();failed(e);});
+            }).then(function(r){paintBuild(r,false);}).catch(function(e){buildBusy=false;controls();if(!cancelledUpload(e))failed(e);});
         }
         oldUpload.onclick=function(){return uploadFull('old.zip',oldUpload);};
+        currentUpload.onclick=function(){return uploadFull('old.zip',currentUpload);};
         newUpload.onclick=function(){return uploadFull('new.zip',newUpload);};
         function beginBuild(mode){
             if(busy||buildBusy)return Promise.resolve();
-            buildBusy=true;controls();
+            clearNotice();buildBusy=true;controls();
             return callGenerate(mode).then(error).then(function(job){
                 paintBuild(Object.assign({},buildState,{job:job,download:false}),false);watchBuild();
             }).catch(function(e){
@@ -367,7 +380,7 @@ return view.extend({
             E('div',{class:'mud-ota-card-head'},[icon('history'),E('h3',{},tr('生成差分包','Generate differential patch','Fark yaması oluştur'))]),
             E('p',{class:'mud-note'},tr('两种方式都基于完整固件的原始文件摘要，保留现有配置、插件和数据。生成完成后可选择是否刷入。','Both modes compare clean release indexes and preserve your settings, plugins and data. Choose whether to apply after generation.','Her iki yöntem temiz sürümleri karşılaştırır; ayarlar, eklentiler ve veriler korunur. Oluşturduktan sonra uygulamayı seçebilirsiniz.')),
             E('div',{class:'mud-ota-build-fields'},[E('label',{for:'ota-build-mode'},tr('生成方式','Source','Kaynak')),buildMode]),
-            baselineNote,oldRow,E('div',{class:'mud-ota-build-fields mud-ota-build-upload'},[newUpload,newSize]),
+            baselineNote,baselinePanel,oldRow,E('div',{class:'mud-ota-build-fields mud-ota-build-upload'},[newUpload,newSize]),
             E('div',{class:'mud-ota-actions'},[generate,resultButton]),buildDetail]);
         paintBuild(buildState,false);
         if(state.load_error){if(interrupted(state.load_error)){phase('reconnecting');watch();}else{initialRetries=0;failed(state.load_error);}}else show(state);
