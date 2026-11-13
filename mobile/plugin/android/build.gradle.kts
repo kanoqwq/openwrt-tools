@@ -47,6 +47,10 @@ val stagePython by tasks.registering(Sync::class) {
 }
 val installerBuildInfo = providers.environmentVariable("OPENWRT_TOOLS_BUILD_INFO").orElse("{\"revision\":\"unrecorded\"}")
 val stageResources by tasks.registering(Sync::class) {
+    // Task actions may capture providers/files, not the enclosing Kotlin script.
+    // Keep configuration-cache serialization independent of script accessors.
+    val buildInfoProvider = installerBuildInfo
+    val buildInfoFile = layout.buildDirectory.file("generated/assets/openwrt-runtime/mobile-build.json").get().asFile
     inputs.property("installerBuildInfo", installerBuildInfo)
     into(layout.buildDirectory.dir("generated/assets/openwrt-runtime"))
     from("../../../runtime/storage-e5.sh")
@@ -64,7 +68,7 @@ val stageResources by tasks.registering(Sync::class) {
     from("../../../ota-native/build.json")
     from("../../../release-index.py")
     doLast {
-        layout.buildDirectory.file("generated/assets/openwrt-runtime/mobile-build.json").get().asFile.writeText(installerBuildInfo.get())
+        buildInfoFile.writeText(buildInfoProvider.get())
     }
 }
 // AGP 9.2+ issue 550220873: use the new-typed block overload for libraries.
