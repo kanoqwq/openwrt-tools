@@ -23,6 +23,24 @@ class RPCTests(unittest.TestCase):
         with patch.object(sys, 'argv', ['rpc.py','call',method]), patch.object(sys, 'stdin', io.StringIO(json.dumps(arguments))), redirect_stdout(io.StringIO()):
             self.rpc.main()
 
+    def test_upload_preflight_recreates_missing_state_and_builder_directories(self):
+        for family,profile in [('mu300','mu300'),('mu300','u30pro'),('e5','e5')]:
+            with self.subTest(profile=profile),tempfile.TemporaryDirectory() as d:
+                root=Path(d);release=root/'etc'/family/'release.json';release.parent.mkdir(parents=True)
+                release.write_text(json.dumps({'image_version':'test-r1','profile':profile,
+                                               'kernel_release':'test-kernel','openwrt':'25.12.5'}))
+                self.rpc.ROOT=d;self.rpc.STATE=root/'etc/unisoc-ota'
+                self.assertFalse(self.rpc.STATE.exists())
+                reply=self.rpc.dispatch('build_status')
+                self.assertEqual(reply['job']['status'],'idle')
+                home=self.rpc.STATE/'builder'
+                self.assertEqual(home.stat().st_mode & 0o777,0o700)
+                # Same open as CGI: no implicit mkdir and no firmware changes.
+                target=home/'old.zip';target.write_bytes(b'PK test upload');target.unlink();home.rmdir()
+                self.rpc.dispatch('build_status')
+                self.assertTrue(home.is_dir())
+                self.assertEqual(json.loads(release.read_text())['image_version'],'test-r1')
+
     def test_authenticated_metadata_is_accepted_for_every_method(self):
         for method in self.rpc.METHODS:
             args = {'ubus_rpc_session': 'a'*32}

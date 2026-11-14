@@ -13,7 +13,13 @@ var callRollback = rpc.declare({object:'unisoc-ota', method:'rollback', nobatch:
 var callRollbackCheck = rpc.declare({object:'unisoc-ota', method:'rollback_check', nobatch:true});
 var callDiscard = rpc.declare({object:'unisoc-ota', method:'discard_recovery', nobatch:true});
 var callReboot = rpc.declare({object:'unisoc-ota', method:'reboot', nobatch:true});
-var callBuildStatus = rpc.declare({object:'unisoc-ota', method:'build_status', nobatch:true});
+var requestBuildStatus = rpc.declare({object:'unisoc-ota', method:'build_status', nobatch:true});
+function callBuildStatus() {
+    return requestBuildStatus().then(function(r) {
+        if(r&&r.error){var e=new Error(r.error);e.otaBackend=true;throw e;}
+        return r;
+    });
+}
 var callGenerate = rpc.declare({object:'unisoc-ota', method:'generate', params:['mode'], nobatch:true});
 var callStartGenerated = rpc.declare({object:'unisoc-ota', method:'start_generated', params:['id'], nobatch:true});
 var callDiscardGenerated = rpc.declare({object:'unisoc-ota', method:'discard_generated', params:['id'], nobatch:true});
@@ -456,7 +462,15 @@ return view.extend({
         function uploadFull(name,target){
             if(busy||buildBusy)return Promise.resolve();
             clearNotice();buildBusy=true;controls();
-            return ui.uploadFile('/etc/unisoc-ota/builder/'+name,target).then(function(){
+            // The status handler also creates the fixed upload directory.
+            // Do not rely on an earlier page load: an upgrade or cleanup may
+            // have removed it while this page remained open. CGI upload does
+            // not create parent directories, and backend errors must stop here.
+            return callBuildStatus().then(function(r){
+                if((r.job||{}).status==='running')
+                    throw new Error(tr('生成任务正在运行，请等待完成后再上传。','Generation is running. Wait until it finishes before uploading.','Oluşturma sürüyor. Yüklemeden önce tamamlanmasını bekleyin.'));
+                return ui.uploadFile('/etc/unisoc-ota/builder/'+name,target);
+            }).then(function(){
                 return callBuildStatus();
             }).then(function(r){paintBuild(r,false);}).catch(function(e){
                 buildBusy=false;controls();

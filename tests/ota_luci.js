@@ -2,6 +2,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const resources = path.join(__dirname, '../runtime/luci-app-unisoc-ota/htdocs/luci-static/resources');
 const source = fs.readFileSync(path.join(resources, 'view/system/unisoc-ota.js'), 'utf8');
 let messages;
@@ -20,7 +21,10 @@ function fixture(write=true, initial=idle(), locale="en", initialBuild={job:{sta
         if(method==='inspect_begin'&&state.rejectInspect){if(state.onInspectBegin)state.onInspectBegin();return Promise.reject(Error(state.rejectInspect));}
         if(method==='inspect_begin')return (state.inspectPromise||Promise.resolve(state.inspection||{id:'a'.repeat(64),applicable:true,manifest:{base_version:'r1',target_version:'r2',operations:[]}})).then(result=>state.inspectionJob||{status:'complete',ticket:'c'.repeat(32),result});
         if(method==='inspect_status')return state.inspectionError?Promise.reject(Error(state.inspectionError)):Promise.resolve(state.inspectionJob||{status:'idle'});
-        if(method==='build_status')return state.buildError?Promise.reject(Error(state.buildError)):Promise.resolve(state.buildStatus);
+        if(method==='build_status'){
+            if(state.onBuildStatus)state.onBuildStatus();
+            return state.buildError?Promise.reject(Error(state.buildError)):Promise.resolve(state.buildReplyError?{error:state.buildReplyError}:state.buildStatus);
+        }
         if(method==='generate')return state.generateError?Promise.reject(Error(state.generateError)):state.generatePromise||Promise.resolve(state.generateAck||{status:'running',mode:args[0],phase:'queued'});
         if(method==='discard_generated'){
             if(state.deleteGeneratedError){if(state.onDeleteGenerated)state.onDeleteGenerated();return Promise.reject(Error(state.deleteGeneratedError));}
@@ -36,7 +40,7 @@ function fixture(write=true, initial=idle(), locale="en", initialBuild={job:{sta
         if(method==='rollback'&&state.rejectRollback)return Promise.reject(Error('rollback rejected'));
         return Promise.resolve({status:'running'});
     }}};
-    const ui={uploadFile:(name)=>{state.uploadPaths.push(name);state.uploads=(state.uploads||0)+1;return state.uploadPromise||Promise.resolve();},showModal:(title,nodes)=>{state.modalTitle=title;state.modal=nodes;},hideModal:()=>{state.modal=[];},addNotification:(_a,node)=>{const value=node.children;state.notifications.push(value);return {remove:()=>{const i=state.notifications.indexOf(value);if(i>=0)state.notifications.splice(i,1);}};},awaitReconnect:()=>{state.reconnects++;}};
+    const ui={uploadFile:(name)=>{state.uploadPaths.push(name);state.uploads=(state.uploads||0)+1;if(state.onUpload)state.onUpload(name);return state.uploadPromise||Promise.resolve();},showModal:(title,nodes)=>{state.modalTitle=title;state.modal=nodes;},hideModal:()=>{state.modal=[];},addNotification:(_a,node)=>{const value=node.children;state.notifications.push(value);return {remove:()=>{const i=state.notifications.indexOf(value);if(i>=0)state.notifications.splice(i,1);}};},awaitReconnect:()=>{state.reconnects++;}};
     state.cancelText=locale==='zh'?'上传已被取消':locale==='tr'?'Yükleme iptal edildi':'Upload has been cancelled';
     const view=new Function('view','rpc','ui','poll','E','document','L','M','_',source)({extend:v=>v},rpc,ui,{add:fn=>state.ticks.add(fn),remove:fn=>state.ticks.delete(fn)},E,{documentElement:{lang:'en'},body:{appendChild:()=>{}}},{env:{cgi_base:'/cgi-bin'},hasViewPermission:()=>state.writable},{injectCss:()=>{state.themeInjected=true;},localizeMenu:()=>{},uiLanguage:()=>locale},text=>text==='Upload has been cancelled'?state.cancelText:text);
     const all=nodes=>nodes.flatMap(n=>!n||typeof n!=='object'?[]:[n,...all(Array.isArray(n.children)?n.children:[])]);
@@ -418,6 +422,48 @@ async function main(){
     deleteAckLost.button('Delete generated patch').onclick();await deleteAckLost.modalButton('Delete generated patch').click();
     assert(deleteAckLost.button('Delete generated patch').hidden);assert.equal(deleteAckLost.notifications.length,0,'Successful deletion with lost acknowledgement was reported as failed');
     assert.equal(fixture().ticks.size,0,'Idle page kept polling');
+    // Real CGI uploads open the destination directly; they cannot recreate a
+    // builder directory removed after the page's initial status response.
+    const uploadRoot=fs.mkdtempSync(path.join(os.tmpdir(),'ota-upload-'));
+    try{
+        for(const [mode,label,name] of [['current','Import current full ZIP','old.zip'],['pair','Upload old full ZIP','old.zip'],['current','Upload new full ZIP','new.zip']]){
+            const page=fixture();page.buildMode().value=mode;page.buildMode().onchange();
+            const dir=path.join(uploadRoot,'builder');
+            fs.mkdirSync(dir,{recursive:true});fs.rmdirSync(dir);
+            page.onBuildStatus=()=>fs.mkdirSync(dir,{recursive:true});
+            page.onUpload=target=>{
+                assert.equal(page.calls.at(-1),'build_status','Upload started before backend directory preparation');
+                assert.equal(target,'/etc/unisoc-ota/builder/'+name);
+                fs.writeFileSync(path.join(dir,name),'PK fixture');
+            };
+            await page.button(label).onclick();
+            assert.equal(fs.readFileSync(path.join(dir,name),'utf8'),'PK fixture');
+            fs.unlinkSync(path.join(dir,name));fs.rmdirSync(dir);
+            assert.equal(page.notifications.length,0);assert.equal(page.uploads,1);assert.equal(page.ticks.size,0);
+        }
+    }finally{fs.rmSync(uploadRoot,{recursive:true,force:true});}
+    for(const returnedError of [false,true]){
+        const page=fixture();
+        if(returnedError)page.buildReplyError="[Errno 2] No such file or directory";
+        else page.buildError='Backend unavailable';
+        await page.button('Import current full ZIP').onclick();
+        assert.equal(page.uploads||0,0,'Failed preparation still opened the file uploader');
+        assert(page.button('Import current full ZIP').disabled,'Backend failure left upload enabled');
+        assert.equal(page.notifications.length,1);
+        page.buildError=null;page.buildReplyError=null;
+        await page.button('Refresh generation status').onclick();
+        assert(!page.button('Import current full ZIP').disabled);assert.equal(page.notifications.length,0);
+    }
+    const becameBusy=fixture();becameBusy.buildStatus={job:{status:'running'},baseline:{available:false},uploads:{}};
+    await becameBusy.button('Import current full ZIP').onclick();
+    assert.equal(becameBusy.uploads||0,0,'An in-flight generation allowed its ZIP to be overwritten');becameBusy.dispose();
+    const preparing=fixture();let allowPreparation;
+    preparing.onBuildStatus=()=>preparing.buildStatus=new Promise(resolve=>allowPreparation=resolve);
+    const firstUpload=preparing.button('Import current full ZIP').onclick();
+    await preparing.button('Import current full ZIP').onclick();
+    assert.equal(preparing.calls.filter(x=>x==='build_status').length,1,'Double click started a second preparation');
+    preparing.onBuildStatus=null;preparing.buildStatus={job:{status:'idle'},baseline:{available:false},uploads:{}};
+    allowPreparation(preparing.buildStatus);await firstUpload;assert.equal(preparing.uploads,1);
     console.log('PASS LuCI update recovery, ZIP import, both generators, result modal, download, explicit review/apply, permissions and no idle polling');
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});

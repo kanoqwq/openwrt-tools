@@ -46,6 +46,27 @@ class BuilderTests(unittest.TestCase):
     def upload(self,*names):
         for name in names:shutil.copyfile(self.archives[name],self.builder.home/(name+'.zip'))
 
+    def test_status_recreates_upload_directory_removed_after_page_load(self):
+        baseline=b'keep saved baseline'
+        self.builder.baseline.write_bytes(baseline)
+        self.builder.home.rmdir()
+        prepared=Builder(self.root)
+        status=prepared.status()
+        self.assertEqual(status['job']['status'],'idle')
+        self.assertEqual(status['uploads'],{})
+        # Match CGI open semantics: the uploader does not create any parents.
+        with (prepared.home/'old.zip').open('wb') as stream:
+            stream.write(self.archives['old'].read_bytes())
+        self.assertGreater(prepared.status()['uploads']['old.zip'],0)
+        self.assertEqual(prepared.baseline.read_bytes(),baseline)
+
+    def test_status_refuses_linked_upload_directory(self):
+        target=self.folder/'other';target.mkdir()
+        self.builder.home.rmdir();self.builder.home.symlink_to(target,target_is_directory=True)
+        with self.assertRaisesRegex(ValueError,'Unsafe patch generation directory'):
+            Builder(self.root)
+        self.assertEqual(list(target.iterdir()),[])
+
     def run_job(self,mode):
         with (self.builder.state/'job.lock').open('a') as held:
             fcntl.flock(held,fcntl.LOCK_EX|fcntl.LOCK_NB)
