@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import stat
 import tarfile
@@ -333,7 +333,7 @@ def compare(old, new):
         elif protected(name):
             # Config defaults may be introduced, but never overwrite a device's
             # existing value or re-create an already-consumed uci-default script.
-            if name.startswith('etc/') and before is None and after and after['kind'] != 'dir' and not name.startswith(('etc/unisoc-ota/', 'etc/uci-defaults/')):
+            if name.startswith('etc/') and before is None and after and not name.startswith(('etc/unisoc-ota/', 'etc/uci-defaults/')):
                 merge = 'default'
             else:
                 preserved.append(name)
@@ -344,6 +344,21 @@ def compare(old, new):
         op = dict(path=name, before=before, after=after)
         if merge: op['merge'] = merge
         operations.append(op)
+    # Defaults also need their directories on older or locally modified
+    # systems. Seed parents using the target's metadata; an existing directory
+    # is preserved by the same default merge, including its permissions/data.
+    paths = {op['path'] for op in operations}
+    for op in list(operations):
+        if op.get('merge') != 'default' or not op['after']:
+            continue
+        for parent in PurePosixPath(op['path']).parents:
+            name = str(parent)
+            if not name.startswith('etc/') or name in paths:
+                continue
+            value = new.entries.get(name)
+            if value and value['kind'] == 'dir':
+                operations.append(dict(path=name, before=None, after=value, merge='default'))
+                paths.add(name)
     # The release database is merged by package name on the device. User-added
     # packages, ownership records, world selections and data are never replaced
     # with the build machine's package database.
