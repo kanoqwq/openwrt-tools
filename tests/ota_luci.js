@@ -20,6 +20,7 @@ function fixture(write=true, initial=idle(), locale="en", initialBuild={job:{sta
         if(method==='status')return state.statusError?Promise.reject(Error(state.statusError)):state.rejectStatus?Promise.reject(Error('offline')):Promise.resolve(state.status);
         if(method==='inspect_begin'&&state.rejectInspect){if(state.onInspectBegin)state.onInspectBegin();return Promise.reject(Error(state.rejectInspect));}
         if(method==='inspect_begin'&&state.emptyInspectAck){if(state.onInspectBegin)state.onInspectBegin();return Promise.resolve({});}
+        if(method==='inspect_begin'&&state.onInspectBegin)state.onInspectBegin();
         if(method==='inspect_begin')return (state.inspectPromise||Promise.resolve(state.inspection||{id:'a'.repeat(64),applicable:true,manifest:{base_version:'r1',target_version:'r2',operations:[]}})).then(result=>state.inspectionJob||{status:'complete',ticket:'c'.repeat(32),result});
         if(method==='inspect_status')return state.inspectionError?Promise.reject(Error(state.inspectionError)):Promise.resolve(state.inspectionJob||{status:'idle'});
         if(method==='build_status'){
@@ -332,6 +333,35 @@ async function main(){
     unknownOutput.button('View generated patch').onclick();assert.equal(unknownOutput.modalTitle,'Retained patch');
     unknownOutput.modalButton('Download .ota').click();assert(unknownOutput.downloads[0].children.some(n=>n.name==='filename'&&n.value==='OpenWrt-generated-patch.ota'));
     assert(!unknownOutput.calls.includes('start_generated'));
+    // A failed historical upload is task data, not a failure of a new request.
+    // Exercise both buttons and the lost-acknowledgement recovery path.
+    for(const sourceName of ['upload','generated'])for(const lostAck of [false,true])for(const damaged of [false,true]){
+        const page=fixture(true,idle(),'en',{job:{status:'complete'},output:previous,has_output:true,download:true,baseline:{available:true},uploads:{}});
+        page.inspectionJob=damaged?{status:'failed',ticket:'',error:'Inspection record is damaged; inspect this patch again'}:{status:'failed',ticket:'b'.repeat(32),source:'upload',error:'ZIP contains no OTA file; use full firmware ZIPs in Generate patch'};
+        page.emptyInspectAck=lostAck;
+        page.onInspectBegin=()=>{page.inspectionJob={status:'complete',ticket:'d'.repeat(32),source:sourceName,result:{id:'a'.repeat(64),applicable:true,manifest:{base_version:'r1',target_version:'r2',operations:[]}}};};
+        if(sourceName==='generated'){
+            page.button('View generated patch').onclick();await page.modalButton('Check and apply').click();
+        }else await page.button('Import patch').onclick();
+        assert(page.arguments.some(([method,args])=>method==='inspect_begin'&&args[0]===sourceName),'Historical failure prevented a new '+sourceName+' inspection');
+        assert(page.modalButton('Apply patch'),'Retry did not reach explicit review');
+        assert.equal(page.notifications.length,0,'Old ZIP failure leaked into a new inspection');
+        assert.equal(page.calls.filter(method=>method==='inspect_begin').length,1);
+        assert(!page.calls.includes('start')&&!page.calls.includes('start_generated'),'Retry bypassed review');
+        page.dispose();
+    }
+    const deniedInspection=fixture();deniedInspection.inspectionJob={error:'Access denied'};
+    await deniedInspection.button('Import patch').onclick();
+    assert.equal(deniedInspection.notifications.length,1,'Actual RPC errors were swallowed');
+    assert(!deniedInspection.calls.includes('inspect_begin'));
+    const failedCheck=fixture();failedCheck.inspectionJob={status:'idle'};
+    failedCheck.onInspectBegin=()=>{failedCheck.inspectionJob={status:'running',ticket:'e'.repeat(32),source:'upload'};};
+    const failedTask=failedCheck.button('Import patch').onclick();await failedCheck.flush();
+    failedCheck.inspectionJob={...failedCheck.inspectionJob,status:'failed',error:'Device/base mismatch'};
+    for(const tick of [...failedCheck.ticks])await tick();await failedTask;
+    assert.equal(failedCheck.ticks.size,0,'A terminal inspection error kept polling');
+    assert.equal(failedCheck.notifications.length,1,'The current inspection failure was hidden');
+    assert(!failedCheck.calls.includes('start'));
     const inspectAckLost=fixture();inspectAckLost.rejectInspect='XHR request timed out';
     inspectAckLost.onInspectBegin=()=>{inspectAckLost.inspectionJob={status:'complete',ticket:'d'.repeat(32),source:'upload',result:{id:'a'.repeat(64),applicable:true,manifest:{base_version:'r1',target_version:'r2',operations:[]}}};};
     await inspectAckLost.button('Import patch').onclick();assert(inspectAckLost.modalButton('Apply patch'));assert.equal(inspectAckLost.notifications.length,0);

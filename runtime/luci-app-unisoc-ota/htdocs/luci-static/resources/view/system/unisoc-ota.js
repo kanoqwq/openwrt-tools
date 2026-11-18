@@ -241,6 +241,13 @@ return view.extend({
                 E('button',{type:'button',class:'mud-btn',click:function(){ui.hideModal();show(last);}},tr('取消','Cancel','İptal')),
                 E('button',{type:'button',class:'mud-btn '+(danger?'warn':'mud-ota-primary'),click:function(){ui.hideModal();return confirm();}},confirmLabel)])])]);
         }
+        function inspectionStatus(ticket){
+            return callInspectStatus(ticket).then(function(value){
+                // A failed task carries its own error. It is still a valid
+                // status reply, and must not prevent starting the next task.
+                return value&&value.status==='failed'?value:error(value);
+            });
+        }
         function waitInspection(job){
             error(job);
             if(!job||typeof job.ticket!=='string'||!/^[a-f0-9]{32}$/.test(job.ticket))throw new Error('Patch inspection did not return a task ticket');
@@ -250,7 +257,7 @@ return view.extend({
             return new Promise(function(resolve,reject){
                 inspectionDone=resolve;
                 function finish(){if(inspectionTick)poll.remove(inspectionTick);inspectionTick=null;inspectionDone=null;}
-                inspectionTick=function(){return callInspectStatus(job.ticket).then(error).then(function(value){
+                inspectionTick=function(){return inspectionStatus(job.ticket).then(function(value){
                     if(disposed)return;
                     if(value.ticket!==job.ticket)throw new Error('Inspection was replaced; inspect this patch again');
                     if(value.status==='complete'){finish();resolve(value.result);}
@@ -266,9 +273,9 @@ return view.extend({
             });
         }
         function beginInspection(source){
-            return callInspectStatus('').then(error).then(function(previous){
+            return inspectionStatus('').then(function(previous){
                 function recover(e){
-                    return callInspectStatus('').then(error).then(function(current){
+                    return inspectionStatus('').then(function(current){
                         if(current&&current.ticket&&current.ticket!==(previous||{}).ticket&&current.source===source)return current;
                         throw e;
                     });

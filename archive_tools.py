@@ -6,7 +6,7 @@ import zipfile
 
 def write_member(archive, path, name):
     path = Path(path)
-    info = zipfile.ZipInfo.from_file(path, name)
+    info = zipfile.ZipInfo.from_file(path, name, strict_timestamps=False)
     mode = stat.S_IMODE(path.stat().st_mode)
     app = name.split('/', 1)[0].endswith('.app')
     mac = app or name.startswith('tools/macos/')
