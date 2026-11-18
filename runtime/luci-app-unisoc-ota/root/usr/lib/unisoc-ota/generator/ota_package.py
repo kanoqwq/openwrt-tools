@@ -13,7 +13,7 @@ import tarfile
 import tempfile
 import zipfile
 
-from .ota_engine import FORMAT, MAX_BYTES, canonical, digest, package_versions, protected, safe_name, validate_manifest
+from .ota_engine import FORMAT, MAX_BYTES, canonical, digest, package_records, package_paths, package_versions, protected, safe_name, validate_manifest
 
 
 def patch_filename(old, new, source):
@@ -312,6 +312,20 @@ def compare(old, new):
             new.entries[destination] = runtime['ota/'+name]
         for name in ('usr/lib/unisoc-ota', 'usr/lib/unisoc-ota/generator', 'usr/libexec', 'usr/libexec/rpcd'):
             new.entries.setdefault(name, dict(kind='dir', mode=0o755, uid=0, gid=0, xattrs={}))
+    # Variant replacements need the matching APK helper files, not just the
+    # binary and database row. Use existing runtime blobs so an old inspector
+    # can still validate the patch before handing it to the new RAM applier.
+    if busybox and 'usr/bin/python3' in runtime:
+        changed = {name for name,value in new.packages.items() if old.packages.get(name) != value}
+        for name, record in package_records(new.package_db).items():
+            if name not in changed:
+                continue
+            for path in package_paths(record):
+                if not path.startswith('lib/apk/packages/'):
+                    continue
+                desc = new.entries.get(path)
+                if desc and desc['kind'] == 'file':
+                    runtime['ota/apk/' + path.removeprefix('lib/apk/packages/')] = desc
     operations, preserved, blockers = [], [], []
     for name in sorted(set(old.entries) | set(new.entries)):
         before, after = old.entries.get(name), new.entries.get(name)
@@ -367,10 +381,22 @@ def compare(old, new):
              kernel_release=new.meta['kernel_release'], operations=operations,
              preserved=preserved, mode='differential', base_packages=old.packages,
              target_packages=new.packages)
-    # Preserve the clean target for the next web update. This optional metadata
-    # adds no archive members and is ignored by older protocol-2 readers.
+    # Older rpcd handlers return the entire manifest. A clean release index can
+    # exceed ubus' message limit even when only a few system files changed.
+    # Store it in the already supported, hashed runtime payload instead. Old
+    # verifiers see a normal file descriptor; the isolated new engine validates
+    # and commits the clean baseline. No file/config compatibility checks change.
     from .release_index import snapshot
-    m['release_index'] = snapshot(new)
+    index = snapshot(new)
+    if busybox and 'usr/bin/python3' in runtime:
+        from .ota_engine import INDEX_RUNTIME
+        content = canonical(index)
+        h = hashlib.sha256(content).hexdigest()
+        runtime[INDEX_RUNTIME] = dict(kind='file', mode=0o600, uid=0, gid=0,
+                                      xattrs={}, sha256=h, size=len(content))
+        support[h] = content
+    else:
+        m['release_index'] = index
     old_boot = old.boot_digest
     with new.open(new.boot_name) as stream:
         content = stream.read(128 << 20)

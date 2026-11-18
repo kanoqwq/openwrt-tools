@@ -135,7 +135,7 @@ return view.extend({
                 tr('正在处理，请稍候。更新开始后关闭网页不会中断任务。','Please wait. Once started, the update continues even if you close this page.','Lütfen bekleyin. Başladıktan sonra sayfa kapatılsa da güncelleme sürer.');
         }
         function phase(value){if(disposed)return;localPhase=value;if(!value){show(last);return;}clearNotice();busy=true;progress(last);controls();detail.textContent=phaseTitle(value);badge.setAttribute('data-state','running');badge.textContent=phaseTitle(value);}
-        function errorNode(e){var info=messages.explainError(e,!zh);if(/Incomplete patch inspection response/.test(info.details))info.message=tr('补丁检查结果不完整，未开始更新。请更新插件后重新检查。','Patch inspection is incomplete. No update started. Update the plugin and inspect again.','Yama kontrolü eksik. Güncelleme başlamadı. Eklentiyi güncelleyip yeniden kontrol edin.');if(/Inspect this patch|Upload differs/.test(info.details))info.message=tr('补丁检查结果已失效或文件已变化，未开始写入。请重新导入并检查。','The review is stale or the file changed. No writes started. Import and inspect it again.','Kontrol geçersiz veya dosya değişti. Yazma başlamadı. Yeniden içe aktarıp kontrol edin.');if(/There is no item named ['"]manifest\.json['"]/.test(info.details))info.message=tr('请选择有效的 update.ota 或包含它的更新 ZIP；完整固件请使用下方的差分生成功能。','Select a valid update.ota or an update ZIP containing it. Use the generator below for full firmware ZIPs.','Geçerli update.ota veya onu içeren güncelleme ZIP dosyasını seçin.');if(/ZIP contains no OTA/.test(info.details))info.message=tr('此 ZIP 不包含 .ota；完整固件请使用下方的差分生成功能。','This ZIP has no .ota. For full firmware, use the generator below.','Bu ZIP .ota içermiyor. Tam sürüm için aşağıdaki oluşturucuyu kullanın.');if(/multiple OTA/.test(info.details))info.message=tr('ZIP 中有多个 .ota，请单独选择需要的补丁。','This ZIP contains multiple .ota files. Select the desired patch directly.','ZIP birden fazla .ota içeriyor. İstenen yamayı doğrudan seçin.');if(/Recovery copy was deleted/.test(info.details))info.message=tr('恢复副本已删除，无法再撤销这次补丁。当前系统不受影响。','The recovery copy was deleted. This patch can no longer be undone; the current system is unaffected.','Kurtarma kopyası silindi. Son yama artık geri alınamaz.');return E('div',{class:'mud-ota-error'},[
+        function errorNode(e){var info=messages.explainError(e,!zh);if(/Incomplete patch inspection response|Patch inspection result is/.test(info.details))info.message=tr('补丁校验结果缺失或不完整，未开始更新。请重新检查补丁。','Patch inspection is missing or incomplete. No update started. Inspect the patch again.','Yama kontrol sonucu eksik veya bozuk. Güncelleme başlamadı. Yamayı yeniden kontrol edin.');if(/Patch inspection did not return a task ticket/.test(info.details))info.message=tr('未收到校验任务编号，未开始更新。请重新检查补丁。','No inspection task ID was received. No update started. Inspect the patch again.','Kontrol görevi kimliği alınamadı. Güncelleme başlamadı. Yamayı yeniden kontrol edin.');if(/Patch inspection task state is invalid/.test(info.details))info.message=tr('补丁校验任务状态无效，未开始更新。请重新检查补丁。','The inspection task state is invalid. No update started. Inspect the patch again.','Kontrol görevi durumu geçersiz. Güncelleme başlamadı. Yamayı yeniden kontrol edin.');if(/Inspect this patch|Upload differs/.test(info.details))info.message=tr('补丁检查结果已失效或文件已变化，未开始写入。请重新导入并检查。','The review is stale or the file changed. No writes started. Import and inspect it again.','Kontrol geçersiz veya dosya değişti. Yazma başlamadı. Yeniden içe aktarıp kontrol edin.');if(/There is no item named ['"]manifest\.json['"]/.test(info.details))info.message=tr('请选择有效的 update.ota 或包含它的更新 ZIP；完整固件请使用下方的差分生成功能。','Select a valid update.ota or an update ZIP containing it. Use the generator below for full firmware ZIPs.','Geçerli update.ota veya onu içeren güncelleme ZIP dosyasını seçin.');if(/ZIP contains no OTA/.test(info.details))info.message=tr('此 ZIP 不包含 .ota；完整固件请使用下方的差分生成功能。','This ZIP has no .ota. For full firmware, use the generator below.','Bu ZIP .ota içermiyor. Tam sürüm için aşağıdaki oluşturucuyu kullanın.');if(/multiple OTA/.test(info.details))info.message=tr('ZIP 中有多个 .ota，请单独选择需要的补丁。','This ZIP contains multiple .ota files. Select the desired patch directly.','ZIP birden fazla .ota içeriyor. İstenen yamayı doğrudan seçin.');if(/Recovery copy was deleted/.test(info.details))info.message=tr('恢复副本已删除，无法再撤销这次补丁。当前系统不受影响。','The recovery copy was deleted. This patch can no longer be undone; the current system is unaffected.','Kurtarma kopyası silindi. Son yama artık geri alınamaz.');return E('div',{class:'mud-ota-error'},[
             E('p',{},info.message),E('details',{},[E('summary',{},tr('技术详情','Technical details','Teknik ayrıntılar')),E('pre',{},info.details)])]);}
         function clearNotice(){if(notice)notice.remove();notice=null;}
         function failed(e){if(!disposed){clearNotice();notice=ui.addNotification(null,errorNode(e),'error');}}
@@ -243,9 +243,10 @@ return view.extend({
         }
         function waitInspection(job){
             error(job);
-            if(!job||!job.ticket)throw new Error('Incomplete patch inspection response');
+            if(!job||typeof job.ticket!=='string'||!/^[a-f0-9]{32}$/.test(job.ticket))throw new Error('Patch inspection did not return a task ticket');
             if(job.status==='complete')return Promise.resolve(job.result);
             if(job.status==='failed')throw new Error(job.error||'Patch inspection failed');
+            if(job.status!=='running')throw new Error('Patch inspection task state is invalid');
             return new Promise(function(resolve,reject){
                 inspectionDone=resolve;
                 function finish(){if(inspectionTick)poll.remove(inspectionTick);inspectionTick=null;inspectionDone=null;}
@@ -254,6 +255,7 @@ return view.extend({
                     if(value.ticket!==job.ticket)throw new Error('Inspection was replaced; inspect this patch again');
                     if(value.status==='complete'){finish();resolve(value.result);}
                     else if(value.status==='failed'){finish();reject(new Error(value.error||'Patch inspection failed'));}
+                    else if(value.status!=='running')throw new Error('Patch inspection task state is invalid');
                 }).catch(function(e){
                     if(disposed)return;
                     if(messages.isConnectionError(e)){
@@ -265,12 +267,21 @@ return view.extend({
         }
         function beginInspection(source){
             return callInspectStatus('').then(error).then(function(previous){
-                return callInspectBegin(source).then(error).catch(function(e){
-                    if(e.otaBackend||!messages.isConnectionError(e))throw e;
+                function recover(e){
                     return callInspectStatus('').then(error).then(function(current){
                         if(current&&current.ticket&&current.ticket!==(previous||{}).ticket&&current.source===source)return current;
                         throw e;
                     });
+                }
+                return callInspectBegin(source).then(function(job){
+                    error(job);
+                    if(job&&typeof job.ticket==='string'&&/^[a-f0-9]{32}$/.test(job.ticket))return job;
+                    // Recover this backend's durable task after an empty/lost
+                    // acknowledgement. Never start another task or use an old API.
+                    return recover(new Error('Patch inspection did not return a task ticket'));
+                },function(e){
+                    if(e.otaBackend||!messages.isConnectionError(e))throw e;
+                    return recover(e);
                 });
             });
         }
@@ -279,8 +290,8 @@ return view.extend({
             phase('checking');
             return (existing?Promise.resolve(existing):beginInspection(generated?'generated':'upload')).then(waitInspection).then(function(r){
                 if(disposed)return;
-                phase(null);error(r);var m=r.manifest;
-                if(!m||typeof r.id!=='string'||!/^[a-f0-9]{64}$/.test(r.id))throw new Error('Incomplete patch inspection response');
+                phase(null);error(r);var m=r&&r.manifest;
+                if(!m||typeof r.id!=='string'||!/^[a-f0-9]{64}$/.test(r.id)||!Array.isArray(m.operations)||typeof r.applicable!=='boolean')throw new Error('Patch inspection result is missing or incomplete');
                 var text=E('div',{},[E('p',{},m.base_version+' → '+m.target_version),
                     E('p',{},m.operations.length+tr(' 个系统文件变更；保留配置、插件及用户数据。',' system file changes. Settings, extra plugins and user data are retained.',' sistem dosyası değişikliği. Ayarlar, eklentiler ve kullanıcı verileri korunur.')),
                     E('p',{class:'mud-note'},tr('仅导入可信来源的补丁。哈希校验不等同于发布者签名。','Import only trusted patches. Checksums do not authenticate the publisher.','Yalnızca güvenilir yamaları içe aktarın. Sağlama toplamı yayıncıyı doğrulamaz.'))]);

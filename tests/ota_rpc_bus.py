@@ -16,7 +16,7 @@ def run(*args, timeout=15):
     return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
 
 
-def main():
+def main(legacy_reply=None):
     repo=Path(__file__).resolve().parents[1]
     core=repo/'runtime/luci-app-unisoc-ota/root/usr/lib/unisoc-ota'
     sys.path.insert(0,str(core))
@@ -26,12 +26,15 @@ def main():
     result={'id':'a'*64,'applicable':True,'conflicts':[],
             'manifest':{'base_version':'r1','target_version':'r2','operations':[{}]*7,
                         'release_index':{'files':'x'*1471143}}}
+    fixed_reply=legacy_reply if legacy_reply is not None else rpc.inspection_summary(result)
+    if legacy_reply is not None:
+        result=dict(legacy_reply,manifest=dict(legacy_reply['manifest'],release_index={'files':'x'*1471143}))
     image='mu300-openwrt-base:25.12.5'
     assert run('docker','image','inspect',image).returncode==0,'Existing test image is unavailable'
     with tempfile.TemporaryDirectory(prefix='ota-rpc-size-') as temp:
         temp=Path(temp)
         (temp/'large.json').write_text(json.dumps(result))
-        (temp/'fixed.json').write_text(json.dumps(rpc.inspection_summary(result)))
+        (temp/'fixed.json').write_text(json.dumps(fixed_reply))
         (temp/'plugin').write_text('''#!/bin/sh
 if [ "$1" = list ]; then echo '{"inspect":{}}'; exit; fi
 case "$1:$2" in call:inspect) cat /fixture/$(cat /tmp/response).json;; esac
@@ -72,7 +75,7 @@ exec sleep 120
                 fixed=command('ubus','-t','3','call','ota-size-fixture','inspect')
                 assert fixed.returncode==0,fixed.stderr
                 value=json.loads(fixed.stdout)
-                assert value['id']==result['id'] and len(value['manifest']['operations'])==7
+                assert value['id']==result['id'] and len(value['manifest']['operations'])==len(result['manifest']['operations'])
                 assert command('ubus','list','session').stdout.strip()=='session'
             print('PASS: compact inspection replies preserve rpcd/login; full verification data is unchanged')
         finally:

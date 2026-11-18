@@ -159,6 +159,24 @@ class RPCTests(unittest.TestCase):
             with self.subTest(method=method),self.assertRaisesRegex(ValueError,'Unexpected RPC'):
                 self.call(method,{'path':'/etc/shadow','mode':'pair'})
 
+    def test_completed_inspection_requires_a_complete_review_record(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self.rpc.STATE=Path(folder)
+            ticket='c'*32
+            good={'id':'a'*64,'applicable':True,'manifest':{'operations':[]}}
+            records=[[],{'status':'complete','ticket':ticket},
+                     {'status':'complete','ticket':ticket,'result':{}},
+                     {'status':'complete','ticket':ticket,'result':dict(good,id='bad')},
+                     {'status':'complete','ticket':ticket,'result':dict(good,manifest={})}]
+            for record in records:
+                (self.rpc.STATE/'inspection.json').write_text(json.dumps(record))
+                result=self.rpc.inspection_status(ticket)
+                self.assertEqual(result['status'],'failed')
+                self.assertEqual(result['ticket'],ticket)
+                self.assertIn('missing or damaged',result['error'])
+            (self.rpc.STATE/'inspection.json').write_text(json.dumps(dict(status='complete',ticket=ticket,result=good)))
+            self.assertEqual(self.rpc.inspection_status(ticket)['result'],good)
+
     def test_generated_apply_preserves_original_download_and_review_id(self):
         from test_ota import package
         with tempfile.TemporaryDirectory() as d:

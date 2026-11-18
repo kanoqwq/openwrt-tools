@@ -51,13 +51,26 @@ def inspection_status(ticket=''):
         raise ValueError('Invalid inspection ticket')
     record = STATE/'inspection.json'
     from builder import read_record
+    value = {}
     try:
         value = read_record(record,1<<20) if record.exists() else {'status':'idle'}
+        if not isinstance(value, dict):
+            value = {}
+            raise ValueError('Invalid inspection record')
         if (value.get('status') not in ('idle','running','complete','failed') or
                 value.get('status')!='idle' and not re.fullmatch(r'[a-f0-9]{32}',str(value.get('ticket','')))):
             raise ValueError('Invalid inspection record')
+        if value.get('status') == 'complete':
+            result = value.get('result')
+            manifest = result.get('manifest') if isinstance(result, dict) else None
+            if (not isinstance(manifest, dict) or
+                    not re.fullmatch(r'[a-f0-9]{64}', str(result.get('id', ''))) or
+                    not isinstance(manifest.get('operations'), list) or
+                    type(result.get('applicable')) is not bool):
+                raise ValueError('Incomplete inspection result')
     except (OSError,ValueError):
-        return {'status':'failed','ticket':ticket,'error':'Inspection record is damaged; inspect this patch again'}
+        return {'status':'failed','ticket':ticket or str(value.get('ticket', '')),
+                'error':'Patch inspection result is missing or damaged; inspect this patch again'}
     if ticket and value.get('ticket') != ticket:
         raise ValueError('Inspection was replaced; inspect this patch again')
     if value.get('status') == 'running':

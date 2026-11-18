@@ -28,6 +28,9 @@ MAX_BYTES = 2 << 30
 MAX_FILES = 50000
 STATE = 'etc/unisoc-ota'
 HEX = re.compile(r'[0-9a-f]{64}')
+# Keep the clean release database in a verified payload, not in the manifest
+# returned verbatim by older LuCI/rpcd inspection handlers.
+INDEX_RUNTIME = 'ota/release-index.json'
 # Persistent state, board firmware/NV and package-manager ownership are never
 # overwritten by release diffs. APK metadata uses explicit per-package merging.
 PROTECTED = ('lib/firmware', 'lib/apk', 'usr/lib/opkg', 'usr/lib/apk',
@@ -93,6 +96,25 @@ def package_paths(record):
         if line.startswith('F:'): directory = line[2:]
         elif line.startswith('R:'): paths.add(directory+'/'+line[2:] if directory else line[2:])
     return paths
+
+
+def package_replacements(installed, target, removed):
+    """A new provider may replace a base variant, e.g. dnsmasq -> full.
+
+    Require both a declared virtual provider and overlapping owned files;
+    merely sharing a dependency or dropping a package is not a replacement.
+    User-added packages are never candidates for automatic removal.
+    """
+    replaced = set()
+    for name in removed & installed.keys():
+        owned = package_paths(installed[name])
+        for record in target.values():
+            provided = next((s[2:].split() for s in record.splitlines() if s.startswith('p:')), [])
+            if (name in {re.split(r'[<>=~]', value, 1)[0] for value in provided}
+                    and owned & package_paths(record)):
+                replaced.add(name)
+                break
+    return replaced
 
 
 def merge_scripts(current, target):
@@ -259,6 +281,16 @@ class Patch:
                 with self.archive.open(info) as stream:
                     if digest(stream) != h:
                         raise ValueError('OTA content checksum mismatch: ' + h)
+            self.release_index = self.manifest.get('release_index')
+            index = self.manifest.get('runtime', {}).get(INDEX_RUNTIME)
+            if index is not None:
+                if self.release_index is not None:
+                    raise ValueError('Duplicate target release indexes')
+                if index['kind'] != 'file' or index['size'] > MAX_MANIFEST:
+                    raise ValueError('Invalid target release index payload')
+                self.release_index = json.loads(self.archive.read('blobs/' + index['sha256']))
+                from baseline import validate_target
+                validate_target(self.release_index, self.manifest)
         except BaseException:
             self.archive.close()
             raise
@@ -453,13 +485,14 @@ class Engine:
         installed_path = self.root/'lib/apk/db/installed'
         installed = package_records(installed_path.read_bytes()) if installed_path.is_file() else {}
         extra_packages = set(installed)-set(m.get('base_packages', {}))
-        retained = set(extra_packages)
-        retained.update(set(m.get('base_packages', {}))-set(m.get('target_packages', {})))
+        removed_base = set(m.get('base_packages', {}))-set(m.get('target_packages', {}))
         target_records = {}
         for op in m['operations']:
             if op.get('merge') == 'apk-db' and op.get('after'):
                 target_records = package_records(patch.archive.read('blobs/'+op['after']['sha256']))
                 break
+        replaced = package_replacements(installed, target_records, removed_base)
+        retained = extra_packages | (removed_base - replaced)
         owned = set()
         for name in retained:
             if name in installed: owned.update(package_paths(installed[name]))
@@ -479,7 +512,7 @@ class Engine:
                 with patch.archive.open('blobs/'+after['sha256']) as stream: new = stream.read()
                 current = self.path(name).read_bytes() if actual else b''
                 if merge == 'apk-db':
-                    records = package_records(current)
+                    records = {n:r for n,r in package_records(current).items() if n not in replaced}
                     records.update({n:r for n,r in package_records(new).items() if n not in extra_packages})
                     new = ('\n\n'.join(records[n].rstrip('\n') for n in sorted(records))+'\n\n').encode()
                 elif merge == 'apk-scripts':
@@ -489,6 +522,8 @@ class Engine:
                 else:
                     separator = ':' if merge == 'accounts' else None
                     lines = current.decode().splitlines()
+                    if merge == 'world':
+                        lines = [line for line in lines if re.split(r'[<>=~]', line, 1)[0] not in replaced]
                     keys = {line.split(separator, 1)[0] if separator else re.split(r'[<>=~]', line, 1)[0] for line in lines}
                     for line in new.decode().splitlines():
                         key = line.split(separator, 1)[0] if separator else re.split(r'[<>=~]', line, 1)[0]
@@ -506,6 +541,32 @@ class Engine:
             if actual and after and actual['kind'] == after['kind'] == 'dir': continue
             op.update(before=actual, after=after)
             ops.append(op)
+        # Package-manager helper files travel in the hashed RAM payload. This
+        # preserves old manifest validators' protected-/lib/apk boundary while
+        # updating only files explicitly owned by the incoming package records.
+        metadata = {path for n,record in target_records.items() if n not in extra_packages
+                    for path in package_paths(record) if path.startswith('lib/apk/packages/')}
+        all_metadata = {path for record in target_records.values() for path in package_paths(record)
+                        if path.startswith('lib/apk/packages/')}
+        for key, after in m.get('runtime', {}).items():
+            if not key.startswith('ota/apk/'):
+                continue
+            name = 'lib/apk/packages/' + key[8:]
+            if name not in all_metadata or '/' in key[8:] or after['kind'] != 'file':
+                raise ValueError('Unowned APK metadata payload: ' + key)
+            if name not in metadata:
+                preserved.append(name); continue
+            actual = descriptor(self.path(name))
+            if actual and actual['kind'] == 'dir':
+                raise ValueError('Cannot replace a user directory: ' + name)
+            if actual != after:
+                ops.append(dict(path=name, before=actual, after=after))
+        for n in replaced:
+            for name in package_paths(installed[n]):
+                if name.startswith('lib/apk/packages/') and name not in metadata:
+                    actual = descriptor(self.path(name))
+                    if actual and actual['kind'] != 'dir':
+                        ops.append(dict(path=name, before=actual, after=None))
         return sorted(ops, key=lambda o:(o['path'].count('/'), o['path'])), generated, preserved
 
     def install_descriptor(self, name, value, source=None):
@@ -734,7 +795,7 @@ class Engine:
                             target_version=patch.manifest['target_version'])
                 if previous.get('backup'):
                     data['previous_transaction'] = {k:v for k,v in previous.items() if k != 'previous_transaction'}
-                if 'release_index' in patch.manifest:
+                if patch.release_index is not None:
                     from baseline import backup as backup_baseline
                     backup_baseline(self.state, backup, data)
                 # The large immutable plan is written once, not rewritten for every
@@ -797,8 +858,8 @@ class Engine:
                                 version=patch.manifest['target_version'], kernel_release=kernel_release)
                 release_file = self.root/('etc/'+patch.manifest['family']+'/release.json')
                 if release_file.is_file(): identity['release_marker'] = hashlib.sha256(release_file.read_bytes()).hexdigest()
-                if 'release_index' in patch.manifest:
-                    atomic_json(self.state / 'baseline.json', patch.manifest['release_index'])
+                if patch.release_index is not None:
+                    atomic_json(self.state / 'baseline.json', patch.release_index)
                 atomic_json(self.state / 'current.json', identity)
                 data['status'] = 'complete'
                 data.pop('previous_transaction', None)

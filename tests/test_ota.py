@@ -202,7 +202,7 @@ class GenerationTests(unittest.TestCase):
                     wanted = hashlib.sha256(after[name]).hexdigest()
                     self.assertEqual(operations[name]['after']['sha256'], wanted, name)
                     self.assertEqual(patch.archive.read('blobs/'+wanted), after[name])
-                    self.assertEqual(patch.manifest['release_index']['release']['entries'][name]['sha256'], wanted)
+                    self.assertEqual(patch.release_index['release']['entries'][name]['sha256'], wanted)
                 # The isolated applier still uses the producer's validated
                 # engine; that is intentionally separate from installed data.
                 producer = patch.manifest['runtime']['ota/engine.py']['sha256']
@@ -217,10 +217,11 @@ class GenerationTests(unittest.TestCase):
             mu_release(root/'old', 'mu300-r1', files)
             mu_release(root/'new', 'mu300-r2', dict(files, **{'usr/lib/test': b'new'}))
             (root/'new/payload/busybox').write_bytes(b'fixture static helper')
-            result = analyze(root/'old', root/'new')
+            result = analyze(root/'old', root/'new', root/'patch.ota')
             self.assertTrue(result['can_export'], result['blockers'])
             self.assertEqual([op['path'] for op in result['manifest']['operations']], ['usr/lib/test'])
-            index = result['manifest']['release_index']['release']['entries']
+            with Patch(root/'patch.ota') as patch:
+                index = patch.release_index['release']['entries']
             self.assertEqual(index['usr/lib/unisoc-ota/engine.py']['sha256'],
                              hashlib.sha256(files['usr/lib/unisoc-ota/engine.py']).hexdigest())
 

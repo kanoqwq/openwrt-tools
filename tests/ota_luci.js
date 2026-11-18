@@ -19,6 +19,7 @@ function fixture(write=true, initial=idle(), locale="en", initialBuild={job:{sta
         state.arguments.push([method,args]);
         if(method==='status')return state.statusError?Promise.reject(Error(state.statusError)):state.rejectStatus?Promise.reject(Error('offline')):Promise.resolve(state.status);
         if(method==='inspect_begin'&&state.rejectInspect){if(state.onInspectBegin)state.onInspectBegin();return Promise.reject(Error(state.rejectInspect));}
+        if(method==='inspect_begin'&&state.emptyInspectAck){if(state.onInspectBegin)state.onInspectBegin();return Promise.resolve({});}
         if(method==='inspect_begin')return (state.inspectPromise||Promise.resolve(state.inspection||{id:'a'.repeat(64),applicable:true,manifest:{base_version:'r1',target_version:'r2',operations:[]}})).then(result=>state.inspectionJob||{status:'complete',ticket:'c'.repeat(32),result});
         if(method==='inspect_status')return state.inspectionError?Promise.reject(Error(state.inspectionError)):Promise.resolve(state.inspectionJob||{status:'idle'});
         if(method==='build_status'){
@@ -374,6 +375,20 @@ async function main(){
     for(const tick of [...checking.ticks])await tick();await checkingTask;
     assert(checking.modalButton('Apply patch'));assert.equal(checking.ticks.size,0);
     assert(!checking.calls.includes('start'),'Inspection applied files without confirmation');
+    const lostInspectionAck=fixture();lostInspectionAck.emptyInspectAck=true;
+    lostInspectionAck.onInspectBegin=()=>{lostInspectionAck.inspectionJob={status:'complete',ticket:'d'.repeat(32),source:'upload',result:{id:'a'.repeat(64),applicable:true,manifest:{base_version:'r1',target_version:'r2',operations:[]}}};};
+    await lostInspectionAck.button('Import patch').onclick();
+    assert(lostInspectionAck.modalButton('Apply patch'),'A durable inspection was lost after an empty acknowledgement');
+    assert.equal(lostInspectionAck.calls.filter(m=>m==='inspect_begin').length,1);
+    assert(!lostInspectionAck.calls.includes('start'));
+    const missingInspection=fixture();missingInspection.emptyInspectAck=true;
+    await missingInspection.button('Import patch').onclick();
+    assert.equal(missingInspection.ticks.size,0);assert.equal(missingInspection.modal.length,0);
+    assert.equal(missingInspection.notifications.length,1);assert(!missingInspection.calls.includes('start'));
+    const brokenInspection=fixture();brokenInspection.inspection={};
+    await brokenInspection.button('Import patch').onclick();
+    assert.equal(brokenInspection.modal.length,0);assert.equal(brokenInspection.ticks.size,0);
+    assert.equal(brokenInspection.notifications.length,1);assert(!brokenInspection.calls.includes('start'));
     const disposedCheck=fixture();disposedCheck.inspectionJob={status:'running',ticket:'c'.repeat(32)};
     const disposedTask=disposedCheck.button('Import patch').onclick();await disposedCheck.flush();disposedCheck.dispose();await disposedTask;
     assert.equal(disposedCheck.ticks.size,0);assert.equal(disposedCheck.modal.length,0);
