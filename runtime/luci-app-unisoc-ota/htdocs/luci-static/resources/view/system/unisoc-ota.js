@@ -2,6 +2,7 @@
 'require view';
 'require rpc';
 'require ui';
+'require request';
 'require poll';
 'require mu300.common as M';
 
@@ -42,6 +43,11 @@ var CSS = `
 .mud-ota-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:20px}.mud-ota .mud-btn{min-height:38px;padding:8px 14px;line-height:1.4}
 .mud-ota .mud-ota-primary,.mud-ota-modal .mud-ota-primary{background:var(--brand,var(--primary,#2f7bf6));border-color:var(--brand,var(--primary,#2f7bf6));color:var(--on-brand,#fff)}
 .mud-ota .mud-ota-footnote{padding-top:16px;margin-top:18px;border-top:1px solid var(--hairline,var(--border,#e3e6ea))}
+.mud-ota .mud-ota-dropzone{display:flex;flex-direction:column;justify-content:center;gap:10px;width:100%;min-height:150px;padding:22px;border:1px dashed var(--hairline,var(--border,#ccc));border-radius:var(--radius-base,.5rem);background:var(--surface-sunken,rgba(127,127,127,.04));color:var(--text,#222);white-space:normal;text-align:center}
+.mud-ota .mud-ota-dropzone:not(:disabled):hover,.mud-ota .mud-ota-dropzone.is-dragging{border-color:var(--brand,#00958e);background:var(--brand-subtle,rgba(0,149,142,.08))}
+.mud-ota .mud-ota-dropzone:focus-visible{outline:2px solid var(--brand,#00958e);outline-offset:3px}
+.mud-ota-dropzone .mud-ota-icon{width:28px;height:28px;color:var(--brand,#00958e)}.mud-ota-dropzone .mud-ota-icon svg{width:28px;height:28px}
+.mud-ota-dropzone .mud-ota-drop-hint{font-size:.83rem;font-weight:400;color:var(--text-muted,#777);overflow-wrap:anywhere}.mud-ota-dropzone .mud-ota-drop-types{font-size:.75rem;font-weight:400;color:var(--text-muted,#777)}
 .mud-ota-space{display:flex;align-items:baseline;gap:12px;margin:3px 0 10px;flex-wrap:wrap}.mud-ota-space strong{font-size:1.65rem;font-weight:650;letter-spacing:-.03em;color:var(--text,#222)}
 .mud-ota-size-note{font-size:.77rem;color:var(--text-muted,#777)}.mud-ota-activity{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7;color:var(--text,#222);font-size:.84rem}
 .mud-ota-overlay{position:fixed;inset:0;z-index:20000;display:grid;place-items:center;padding:24px;background:rgba(0,0,0,.36)}
@@ -86,7 +92,12 @@ return view.extend({
         var version=E('code'), badge=E('span',{class:'mud-ota-status'});
         var size=E('strong',{},'--'), recoveryNote=E('p',{class:'mud-note'});
         function action(label,kind,cls){return E('button',{type:'button',class:'mud-btn '+(cls||''),'aria-label':label,disabled:!L.hasViewPermission()},[icon(kind),label]);}
-        var button=action(tr('导入差异包','Import patch','Yama içe aktar'),'upload','mud-ota-primary');
+        var button=action(tr('导入差异包','Import patch','Yama içe aktar'),'upload','mud-ota-dropzone');
+        var uploadHintText=tr('拖拽文件到此处，或点击选择上传','Drop a file here, or click to select and upload','Dosyayı buraya bırakın veya seçip yüklemek için tıklayın');
+        var uploadHint=E('span',{class:'mud-ota-drop-hint',id:'ota-upload-hint'},uploadHintText);
+        button.appendChild(uploadHint);
+        button.appendChild(E('span',{class:'mud-ota-drop-types'},tr('支持 .ota 和包含补丁的 .zip · 每次一个文件','Supports .ota and patch .zip archives · one file at a time','.ota ve yama içeren .zip desteklenir · tek seferde bir dosya')));
+        button.setAttribute('aria-describedby','ota-upload-hint');
         var rollback=action(tr('撤销上次补丁','Roll back last patch','Son yamayı geri al'),'recovery');
         var discard=action(tr('删除恢复副本','Delete recovery copy','Kurtarma kopyasını sil'),'trash','warn');
         var reboot=action(tr('重启设备','Reboot','Yeniden başlat'),'power');
@@ -276,10 +287,49 @@ return view.extend({
                 });
             }).catch(function(e){phase(null);detail.textContent=tr('本次补丁未导入。','This patch was not imported.','Bu yama içe aktarılmadı.');failed(e);});
         }
-        button.onclick=function(){
-            if(busy||buildBusy)return;
+        function uploadPatch(file){
+            if(disposed||button.disabled||busy||buildBusy||rebooting||!L.hasViewPermission())return Promise.resolve();
             phase('upload');
-            return ui.uploadFile('/etc/unisoc-ota/upload.ota',button).then(function(){return inspectPatch(false);}).catch(function(e){phase(null);if(!cancelledUpload(e))failed(e);});
+            var upload;
+            if(!file)upload=ui.uploadFile('/etc/unisoc-ota/upload.ota',button);
+            else{
+                // Same authenticated CGI transport and fixed destination as
+                // LuCI's file picker. File names never become device paths.
+                var data=new FormData();
+                data.append('sessionid',rpc.getSessionID());
+                data.append('filename','/etc/unisoc-ota/upload.ota');
+                data.append('filedata',file);
+                uploadHint.textContent=tr('正在上传：','Uploading: ','Yükleniyor: ')+file.name;
+                upload=request.post(L.env.cgi_base+'/cgi-upload',data,{timeout:0,progress:function(event){
+                    if(disposed)return;
+                    var pct=event.total>0?' · '+Math.min(100,Math.round(event.loaded*100/event.total))+'%':'';
+                    uploadHint.textContent=tr('正在上传：','Uploading: ','Yükleniyor: ')+file.name+pct;
+                }}).then(function(response){
+                    var reply=response.json();
+                    if(!reply||typeof reply!=='object')throw new Error(tr('上传响应无效','Invalid upload response','Geçersiz yükleme yanıtı'));
+                    if(reply.failure)throw new Error(reply.message||String(reply.failure));
+                    return reply;
+                });
+            }
+            return upload.then(function(){if(!disposed)return inspectPatch(false);}).catch(function(e){phase(null);if(!cancelledUpload(e))failed(e);}).finally(function(){if(!disposed)uploadHint.textContent=uploadHintText;});
+        }
+        button.onclick=function(){return uploadPatch(null);};
+        button.ondragenter=button.ondragover=function(event){
+            event.preventDefault();event.stopPropagation();
+            if(event.dataTransfer)event.dataTransfer.dropEffect=button.disabled?'none':'copy';
+            button.classList.toggle('is-dragging',!button.disabled);
+        };
+        button.ondragleave=function(event){
+            if(!event.relatedTarget||!button.contains(event.relatedTarget))button.classList.remove('is-dragging');
+        };
+        button.ondrop=function(event){
+            event.preventDefault();event.stopPropagation();button.classList.remove('is-dragging');
+            if(disposed||button.disabled||busy||buildBusy||rebooting||!L.hasViewPermission())return Promise.resolve();
+            var files=event.dataTransfer&&event.dataTransfer.files;
+            var invalid=!files||files.length!==1?tr('请每次拖入一个补丁文件','Drop one patch file at a time','Tek seferde bir yama dosyası bırakın'):
+                !/\.(ota|zip)$/i.test(files[0].name)?tr('请选择 .ota 或包含补丁的 .zip 文件','Choose an .ota file or a .zip containing a patch','Bir .ota dosyası veya yama içeren .zip seçin'):null;
+            if(invalid){clearNotice();notice=ui.addNotification(null,E('p',{},invalid),'warning');return Promise.resolve();}
+            return uploadPatch(files[0]);
         };
         rollback.onclick=function(){
             if(busy)return;phase('recovery');
