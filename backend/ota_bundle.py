@@ -45,6 +45,7 @@ def export_bundle(patch, output, runtime):
             if digest(stream) != expected:
                 raise ValueError('Native runtime checksum mismatch: ' + name)
     output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
     if output.exists():
         raise ValueError('Output already exists')
     tmp = output.with_suffix(output.suffix + '.building')

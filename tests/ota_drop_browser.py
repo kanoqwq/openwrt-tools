@@ -80,24 +80,31 @@ def main():
                     assert page.evaluate("calls.filter(x=>x[0]==='inspect_begin').length")==1
                     assert not page.evaluate("calls.some(x=>x[0]==='start'||x[0]==='start_generated')")
                     assert not zone.is_disabled()
-                # Native click and keyboard retain LuCI's existing upload UI.
+                # Click/keyboard select first, then prepare and upload the fixed patch slot.
                 setup();zone=page.locator('#ota-patch-upload');zone.focus();page.keyboard.press('Enter')
-                assert page.evaluate('pickers')==['/etc/unisoc-ota/upload.ota']
-                page.evaluate('finishPicker()');page.wait_for_selector('#modal')
+                page.wait_for_selector('#ota-full-file')
+                assert page.evaluate('uploads.length')==0
+                page.locator('#ota-full-file').set_input_files(dict(name='patch.ota',mimeType='application/octet-stream',buffer=b'fixture'))
+                page.locator('#ota-full-file-confirm').click()
+                page.wait_for_function('uploads.length===1')
+                assert page.evaluate("calls.some(x=>x[0]==='status')")
+                page.evaluate('finishUpload()');page.wait_for_selector('#modal')
                 assert not page.evaluate("calls.some(x=>x[0]==='start')")
                 setup();page.locator('#ota-patch-upload').click()
-                page.evaluate("cancelPicker(new Error('Upload has been cancelled'))")
+                page.locator('#modal button').first.click()
                 page.wait_for_function('!document.querySelector("#ota-patch-upload").disabled')
                 assert page.locator('[role="alert"]').count()==0
                 for write,running in ((False,False),(True,True)):
                     setup(write,running);page.evaluate("drop(['update.ota'])")
                     assert page.evaluate('uploads.length')==0
                     assert page.locator('#ota-patch-upload').is_disabled()
-                setup();page.evaluate("failUpload=true;drop(['update.zip']);finishUpload()")
+                setup();page.evaluate("failUpload=true;drop(['update.zip'])")
+                page.wait_for_function('uploads.length===1');page.evaluate('finishUpload()')
                 page.wait_for_function('!document.querySelector("#ota-patch-upload").disabled')
                 assert not page.evaluate("calls.some(x=>x[0]==='inspect_begin')")
                 assert page.locator('[role="alert"]').count()==1
-                setup();page.evaluate("drop(['update.ota']);otaView.unload();finishUpload()")
+                setup();page.evaluate("drop(['update.ota'])")
+                page.wait_for_function('uploads.length===1');page.evaluate('otaView.unload();finishUpload()')
                 page.wait_for_timeout(25)
                 assert not page.evaluate("calls.some(x=>x[0]==='inspect_begin')")
                 # Current-version initialization and the new-version slot use
@@ -194,6 +201,15 @@ def main():
                 page.evaluate('finishUpload()')
                 page.wait_for_function('!document.querySelector("#ota-current-upload").disabled')
                 assert page.locator('[role="alert"]').count()==0
+                # The patch slot also prepares again after a final-target ENOENT.
+                setup();page.evaluate("drop(['update.ota'])")
+                page.wait_for_function('uploads.length===1')
+                page.evaluate("finishUpload({failure:2,message:'Failed to open target file'})")
+                page.wait_for_function('uploads.length===2')
+                assert page.evaluate("calls.filter(x=>x[0]==='status').length")==2
+                page.evaluate('finishUpload()');page.wait_for_selector('#modal')
+                assert page.evaluate("calls.filter(x=>x[0]==='inspect_begin').length")==1
+                assert not page.evaluate("calls.some(x=>['start','start_generated'].includes(x[0]))")
                 # Other errno values and a repeated ENOENT are never retried forever.
                 for code,attempts in ((28,1),(30,1),(13,1),(2,2)):
                     setup();page.evaluate("drop(['full.zip'],'drop','ota-current-upload')")

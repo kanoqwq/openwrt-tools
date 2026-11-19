@@ -31,13 +31,19 @@ class Builder:
         self.engine = Engine(root)
         self.state = self.engine.state
         self.home = self.engine.path('etc/unisoc-ota/builder')
-        if self.home.is_symlink():
-            raise ValueError('Unsafe patch generation directory')
-        self.home.mkdir(mode=0o700,parents=True,exist_ok=True)
+        self.prepare_home()
         self.job = self.home/'job.json'
         self.output = self.home/'update.ota'
         self.baseline = self.state/'baseline.json'
         self.result = self.home/'output.json'
+
+    def prepare_home(self):
+        # Public operations can outlive a cleanup or an in-place update.
+        # Recreate only this owned work directory, never missing firmware/data.
+        self.engine.path('etc/unisoc-ota/builder')
+        if self.home.is_symlink():
+            raise ValueError('Unsafe patch generation directory')
+        self.home.mkdir(mode=0o700, parents=True, exist_ok=True)
 
     def baseline_status(self):
         from baseline import current
@@ -122,6 +128,7 @@ class Builder:
             shutil.rmtree(folder)
 
     def status(self):
+        self.prepare_home()
         value = self.job_status()
         if value.get('status') == 'running':
             with (self.state/'job.lock').open('a') as held:
@@ -151,6 +158,7 @@ class Builder:
         return hashlib.sha256(str((stamp.st_dev,stamp.st_ino,stamp.st_size,stamp.st_mtime_ns)).encode()).hexdigest()
 
     def discard_generated(self, expected):
+        self.prepare_home()
         # The same admission lock covers generation, inspection and application.
         # Only this fixed output is disposable; baseline and recovery stay intact.
         with (self.state/'job.lock').open('a') as held:
@@ -168,6 +176,7 @@ class Builder:
         return self.status()
 
     def start(self, mode):
+        self.prepare_home()
         if mode not in ('current','pair','baseline'):
             raise ValueError('Invalid patch generation mode')
         with (self.state/'job.lock').open('a') as held:
@@ -199,6 +208,7 @@ class Builder:
         # Inherited lock makes generation mutually exclusive with apply/rollback
         # without holding APK/package-manager locks while hashing release files.
         with os.fdopen(lock_fd,'a'):
+            self.prepare_home()
             task_id=self.job_status().get('task_id') or os.urandom(16).hex()
             try:
                 self.retain_output()
@@ -264,6 +274,7 @@ class Builder:
                 atomic_json(self.job,{'status':'failed','mode':mode,'task_id':task_id,'error':str(error)[-2000:]})
 
     def inspect_generated(self):
+        self.prepare_home()
         with (self.state/'job.lock').open('a') as held:
             fcntl.flock(held,fcntl.LOCK_EX|fcntl.LOCK_NB)
             value=self.output_summary()

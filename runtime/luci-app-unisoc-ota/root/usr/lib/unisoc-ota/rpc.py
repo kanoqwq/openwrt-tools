@@ -326,7 +326,7 @@ def worker(command, path=None, expected_id=None):
                                 env=env, capture_output=True, text=True)
         if result.returncode: raise ValueError(result.stderr or result.stdout)
         return json.loads(result.stdout)
-    STATE.mkdir(mode=0o700, exist_ok=True)
+    STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
     with (STATE / 'job.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         # Parent holds the lock until a durable running marker is written, then
@@ -340,7 +340,7 @@ def worker(command, path=None, expected_id=None):
 
 
 def dispatch(method, path=None, review_id=None, mode=None):
-    STATE.mkdir(mode=0o700, exist_ok=True)
+    STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
     if method == 'inspect_begin': return begin_inspection(mode)
     if method == 'inspect_status': return inspection_status('' if review_id is None else review_id)
     if method in ('build_status','generate','inspect_generated','start_generated','discard_generated'):

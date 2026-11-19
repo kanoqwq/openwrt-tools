@@ -138,7 +138,7 @@ def prepare_runtime(patch, root=''):
     if not patch.manifest.get('runtime'):
         raise ValueError('Patch has no portable runtime')
     home = Path(root or '/')/'tmp'/('unisoc-ota-'+patch.id)
-    home.mkdir(mode=0o700, exist_ok=True)
+    home.mkdir(mode=0o700, parents=True, exist_ok=True)
     if home.is_symlink() or home.stat().st_uid != 0:
         raise ValueError('Unsafe RAM runtime directory')
     for key, name, mode in (('busybox', 'busybox', 0o700), ('bootstrap', 'bootstrap.sh', 0o600)):
@@ -314,6 +314,7 @@ def sync_dir(path):
 
 
 def atomic_json(path, value):
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     tmp = path.with_suffix('.new')
     with tmp.open('wb') as stream:
         stream.write(canonical(value) + b'\n')
@@ -360,7 +361,7 @@ class Engine:
                 paths = ['run/e5-part-update.lock', 'run/e5-upgrade/lock'] if (self.root / 'etc/e5/release.json').exists() else ['run/mu300-update/lock']
                 for name in paths:
                     target = self.path(name)
-                    target.parent.mkdir(mode=0o700, exist_ok=True)
+                    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                     if target.is_symlink() or target.exists() and (not target.is_file() or target.stat().st_nlink != 1):
                         raise ValueError('Unsafe shared upgrade lock')
                     held = stack.enter_context(target.open('a'))
@@ -567,7 +568,31 @@ class Engine:
                     actual = descriptor(self.path(name))
                     if actual and actual['kind'] != 'dir':
                         ops.append(dict(path=name, before=actual, after=None))
-        return sorted(ops, key=lambda o:(o['path'].count('/'), o['path'])), generated, preserved
+        # A directory may have existed in both clean releases but be absent
+        # on this device. Include missing ancestors in the transaction, too.
+        planned = {op['path']: op for op in ops}
+        entries = (patch.release_index or {}).get('release', {}).get('entries', {})
+        for op in ops:
+            if not op['after']:
+                continue
+            for parent in PurePosixPath(op['path']).parents:
+                name = str(parent)
+                if name == '.' or name in planned:
+                    continue
+                actual = descriptor(self.path(name))
+                if actual is not None:
+                    if actual['kind'] != 'dir':
+                        raise ValueError('Parent is not a directory: ' + name)
+                    continue
+                value = entries.get(name)
+                if value is not None and value['kind'] != 'dir':
+                    raise ValueError('Release parent is not a directory: ' + name)
+                # Legacy archives may have no release index. Newly created
+                # parents use the normal root-owned 0755 directory default;
+                # existing user directory metadata is never changed.
+                value = value or dict(kind='dir', mode=0o755, uid=0, gid=0, xattrs={})
+                planned[name] = dict(path=name, before=None, after=value)
+        return sorted(planned.values(), key=lambda o:(o['path'].count('/'), o['path'])), generated, preserved
 
     def install_descriptor(self, name, value, source=None):
         path = self.path(name)
@@ -576,8 +601,8 @@ class Engine:
                 path.unlink()
                 sync_dir(path.parent)
             return
-        # All new parents have explicit directory operations; never invent root
-        # ownership/mode for an existing user tree.
+        # All required parents are in the durable plan, including directories
+        # missing only on this device. Creation must not bypass that journal.
         if not path.parent.is_dir():
             raise ValueError('Missing parent directory: ' + name)
         if value['kind'] == 'dir':

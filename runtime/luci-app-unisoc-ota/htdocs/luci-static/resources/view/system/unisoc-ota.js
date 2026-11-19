@@ -317,26 +317,26 @@ return view.extend({
                 });
             }).catch(function(e){phase(null);detail.textContent=tr('本次补丁未导入。','This patch was not imported.','Bu yama içe aktarılmadı.');failed(e);});
         }
-        function chooseFullZip(){
+        function chooseUpload(patch){
             return new Promise(function(resolve,reject){
-                var input=E('input',{type:'file',accept:'.zip',id:'ota-full-file',style:'display:block;width:100%;min-width:0'});
+                var input=E('input',{type:'file',accept:patch?'.ota,.zip':'.zip',id:'ota-full-file',style:'display:block;width:100%;min-width:0'});
                 var settled=false,note=E('p',{class:'mud-note'}),confirm=action(tr('上传','Upload','Yükle'),'upload','mud-ota-primary');
                 confirm.id='ota-full-file-confirm';confirm.disabled=true;
                 function finish(file){if(settled)return;settled=true;cancelFullPicker=null;ui.hideModal();if(file)resolve(file);else reject(new Error('Upload has been cancelled'));}
                 cancelFullPicker=function(){finish(null);};
                 input.onchange=function(){
-                    var file=input.files&&input.files[0],valid=file&&/\.zip$/i.test(file.name);
+                    var file=input.files&&input.files[0],valid=file&&(patch?/\.(ota|zip)$/i:/\.zip$/i).test(file.name);
                     confirm.disabled=!valid;
-                    note.textContent=file&&!valid?tr('请选择完整固件 .zip 文件','Choose a full firmware .zip file','Tam ürün yazılımı .zip dosyasını seçin'):'';
+                    note.textContent=file&&!valid?(patch?tr('请选择 .ota 或包含补丁的 .zip 文件','Choose an .ota file or a .zip containing a patch','Bir .ota dosyası veya yama içeren .zip seçin'):tr('请选择完整固件 .zip 文件','Choose a full firmware .zip file','Tam ürün yazılımı .zip dosyasını seçin')):'';
                 };
                 confirm.onclick=function(){if(!confirm.disabled)finish(input.files[0]);};
                 var cancel=action(tr('取消','Cancel','İptal'),'history');cancel.onclick=cancelFullPicker;
-                ui.showModal(tr('选择完整固件 ZIP','Choose full firmware ZIP','Tam ürün yazılımı ZIP dosyasını seçin'),[
+                ui.showModal(patch?tr('选择系统补丁','Choose system patch','Sistem yamasını seçin'):tr('选择完整固件 ZIP','Choose full firmware ZIP','Tam ürün yazılımı ZIP dosyasını seçin'),[
                     E('div',{class:'mud mud-ota-modal'},[input,note,E('div',{class:'mud-ota-modal-actions'},[cancel,confirm])])]);
             });
         }
         function uploadFile(path,target,file,hint,hintText,prepare,retried){
-            if(!file)return prepare?chooseFullZip().then(function(selected){return uploadFile(path,target,selected,hint,hintText,prepare,false);}):ui.uploadFile(path,target);
+            if(!file)return chooseUpload(path==='/etc/unisoc-ota/upload.ota').then(function(selected){return uploadFile(path,target,selected,hint,hintText,prepare,false);});
             // A picker may stay open while an update/cleanup removes the target
             // directory. Prepare after selection, immediately before each POST.
             function send(){
@@ -391,7 +391,11 @@ return view.extend({
         function uploadPatch(file){
             if(disposed||button.disabled||busy||buildBusy||rebooting||!L.hasViewPermission())return Promise.resolve();
             phase('upload');
-            return uploadFile('/etc/unisoc-ota/upload.ota',button,file,uploadHint,uploadHintText)
+            return uploadFile('/etc/unisoc-ota/upload.ota',button,file,uploadHint,uploadHintText,function(){
+                return callStatus().then(error).then(function(r){
+                    if((r.job||{}).status==='running')throw new Error(tr('更新任务正在运行，请等待完成后再上传。','Update is running. Wait until it finishes before uploading.','Güncelleme sürüyor. Yüklemeden önce tamamlanmasını bekleyin.'));
+                });
+            })
                 .then(function(){if(!disposed)return inspectPatch(false);}).catch(function(e){phase(null);if(!cancelledUpload(e))failed(e);});
         }
         button.onclick=function(){return uploadPatch(null);};

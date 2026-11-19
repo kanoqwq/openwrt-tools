@@ -17,7 +17,7 @@ function fixture(write=true, initial=idle(), locale="en", initialBuild={job:{sta
     const rpc={getSessionID:()=>'test-session',declare:options=>{state.declarations.push(options);const {method}=options;return (...args)=>{
         state.calls.push(method);
         state.arguments.push([method,args]);
-        if(method==='status')return state.statusError?Promise.reject(Error(state.statusError)):state.rejectStatus?Promise.reject(Error('offline')):Promise.resolve(state.status);
+        if(method==='status'){if(state.onStatus)state.onStatus();return state.statusError?Promise.reject(Error(state.statusError)):state.rejectStatus?Promise.reject(Error('offline')):Promise.resolve(state.status);}
         if(method==='inspect_begin'&&state.rejectInspect){if(state.onInspectBegin)state.onInspectBegin();return Promise.reject(Error(state.rejectInspect));}
         if(method==='inspect_begin'&&state.emptyInspectAck){if(state.onInspectBegin)state.onInspectBegin();return Promise.resolve({});}
         if(method==='inspect_begin'&&state.onInspectBegin)state.onInspectBegin();
@@ -96,9 +96,10 @@ async function main(){
         assert(translated.root.class.includes('mud-ota'));
         assert(translated.themeInjected);
     }
-    const g=fixture();g.status={identity:{version:'r2'},job:{status:'running'}};
+    const g=fixture();
     g.rejectStart=true;
     await g.button('Import patch').onclick();
+    g.status={identity:{version:'r2'},job:{status:'running'}};
     g.button('Apply patch').click();
     await g.flush();
     // A lost start reply must check the actual device state, not unlock a
@@ -207,15 +208,16 @@ async function main(){
     assert(stages.overlay().hidden);assert(!stages.button('Import patch').disabled);assert(stages.text().includes('Reboot to use'));
     for(const status of ['running','complete']){
         const lost=fixture();lost.startError='XHR request timed out';
+        await lost.button('Import patch').onclick();
         lost.status={...idle(),reboot_required:status==='complete',job:{status,command:'apply',patch_id:'a'.repeat(64),result:{id:'a'.repeat(64)}}};
-        await lost.button('Import patch').onclick();await lost.button('Apply patch').click();
+        await lost.button('Apply patch').click();
         assert.equal(lost.notifications.length,0,'Confirmed '+status+' job was misreported as failed');
         assert.equal(lost.overlay().hidden,status==='complete');
         assert.equal(lost.calls.filter(x=>x==='start').length,1,'Lost acknowledgement retried the update');
     }
     for(const matching of [true,false]){
-        const lost=fixture();lost.startError='XHR request timed out';lost.statusError=missing;
-        await lost.button('Import patch').onclick();await lost.button('Apply patch').click();
+        const lost=fixture();lost.startError='XHR request timed out';
+        await lost.button('Import patch').onclick();lost.statusError=missing;await lost.button('Apply patch').click();
         assert.equal(lost.notifications.length,0,'Lost acknowledgement plus RPC reload was reported as a failed update');
         assert(lost.button('Import patch').disabled);
         lost.statusError=null;lost.status={...idle(),reboot_required:true,job:{status:'complete',command:'apply',result:{id:(matching?'a':'b').repeat(64)}}};
@@ -475,6 +477,24 @@ async function main(){
     // builder directory removed after the page's initial status response.
     const uploadRoot=fs.mkdtempSync(path.join(os.tmpdir(),'ota-upload-'));
     try{
+        const patchPage=fixture(),patchDir=path.join(uploadRoot,'patch-state');
+        patchPage.onPicker=()=>{if(fs.existsSync(patchDir))fs.rmdirSync(patchDir);};
+        patchPage.onStatus=()=>fs.mkdirSync(patchDir,{recursive:true});
+        patchPage.onUpload=target=>{
+            assert.equal(patchPage.calls.at(-1),'status');
+            assert.equal(target,'/etc/unisoc-ota/upload.ota');
+            fs.writeFileSync(path.join(patchDir,'upload.ota'),'fixture');
+        };
+        await patchPage.button('Import patch').onclick();
+        assert.equal(fs.readFileSync(path.join(patchDir,'upload.ota'),'utf8'),'fixture');
+        assert.equal(patchPage.uploads,1);assert.equal(patchPage.notifications.length,0);
+        patchPage.dispose();
+        for(const failure of ['offline','busy']){
+            const blocked=fixture();
+            blocked.onPicker=()=>{if(failure==='offline')blocked.statusError='Offline';else blocked.status={job:{status:'running'}};};
+            await blocked.button('Import patch').onclick();
+            assert.equal(blocked.uploads||0,0);assert.equal(blocked.notifications.length,1);blocked.dispose();
+        }
         for(const [mode,label,name] of [['current','Import current full ZIP','old.zip'],['pair','Upload old full ZIP','old.zip'],['current','Upload new full ZIP','new.zip']]){
             const page=fixture();page.buildMode().value=mode;page.buildMode().onchange();
             const dir=path.join(uploadRoot,'builder');

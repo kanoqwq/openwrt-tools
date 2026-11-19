@@ -25,18 +25,19 @@ setup = r'''async ([source,errors,initial])=>{
         for(const child of Array.isArray(children)?children:[children])e.append(child);
         return e;
     }
-    const rpc={declare:({method})=>(...args)=>{
+    const rpc={getSessionID:()=>'fixture-session',declare:({method})=>(...args)=>{
         s.calls.push(method);
         if(method==='status')return s.error?Promise.reject(Error(s.error)):Promise.resolve(s.status);
-        if(method==='inspect')return Promise.resolve({id:'a'.repeat(64),applicable:true,manifest:{base_version:'r1',target_version:'r2',operations:[]}});
+        if(method==='inspect_begin')return Promise.resolve({status:'complete',ticket:'c'.repeat(32),result:{id:'a'.repeat(64),applicable:true,manifest:{base_version:'r1',target_version:'r2',operations:[]}}});
         return Promise.resolve({status:'running',command:'apply',patch_id:'a'.repeat(64)});
     }};
     const ui={uploadFile:()=>Promise.resolve(),addNotification:(_a,node)=>s.notes.push(node.textContent),
         showModal:(_title,nodes)=>document.querySelector('#modal').replaceChildren(...nodes),
         hideModal:()=>document.querySelector('#modal').replaceChildren(),awaitReconnect:()=>{}};
     const poll={add:f=>s.ticks.push(f),remove:f=>s.ticks=s.ticks.filter(x=>x!==f)};
-    const L={hasViewPermission:()=>true},M={injectCss:()=>{},localizeMenu:()=>{},uiLanguage:()=> 'en'};
-    const v=new Function('view','rpc','ui','poll','E','L','M',source)({extend:v=>v},rpc,ui,poll,E,L,M);
+    const request={post:()=>Promise.resolve({json:()=>({size:1})})};
+    const L={env:{cgi_base:'/cgi-bin'},hasViewPermission:()=>true},M={injectCss:()=>{},localizeMenu:()=>{},uiLanguage:()=> 'en'};
+    const v=new Function('view','rpc','ui','request','poll','E','L','M',source)({extend:v=>v},rpc,ui,request,poll,E,L,M);
     const messages=await import('data:text/javascript;base64,'+errors);
     document.querySelector('#app').append(v.render([messages,initial?{load_error:Error(missing)}:s.status]));
     window.complete=async ()=>{
@@ -54,6 +55,8 @@ with sync_playwright() as engine:
         page.evaluate(setup, [source, errors, initial])
         if not initial:
             page.get_by_role('button', name='Import patch', exact=True).click()
+            page.locator('#ota-full-file').set_input_files(dict(name='update.ota',mimeType='application/octet-stream',buffer=b'fixture'))
+            page.locator('#ota-full-file-confirm').click()
             page.get_by_role('button', name='Apply patch', exact=True).click()
             page.wait_for_function('s.ticks.length===1')
         page.evaluate('async ()=>{s.error=s.missing;for(let i=0;i<3;i++)for(const tick of [...s.ticks])await tick();}')

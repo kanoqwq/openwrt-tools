@@ -458,6 +458,7 @@ def analyze(old_path, new_path, output=None, progress=lambda *_: None, index_dir
             if result['blockers']:
                 raise ValueError('; '.join(result['blockers'][:12]))
             output = Path(output)
+            output.parent.mkdir(parents=True, exist_ok=True)
             if output.exists():
                 raise ValueError('Output already exists; select a new filename')
             tmp = output.with_suffix(output.suffix + '.building')
