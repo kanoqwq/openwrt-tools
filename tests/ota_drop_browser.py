@@ -20,6 +20,7 @@ FIXTURE = r'''async ([source,errors,lang,writable,running,baselineReady])=>{
    calls.push([o.method,args]);
    if(o.method==='status')return Promise.resolve(state);
    if(o.method==='build_status'){if(buildStatusError)return Promise.reject(Error('Fixture directory preparation failed'));if(blockPreflight)return new Promise(r=>window.releasePreflight=()=>r(builder));return Promise.resolve(builder);}
+   if(o.method==='discard_generated'){if(args[0]!==builder.output_id)return Promise.resolve({error:'Generated patch changed'});builder.has_output=false;builder.download=false;builder.output_id=null;builder.output=null;builder.job={status:'idle'};return Promise.resolve(builder);}
    if(o.method==='inspect_begin')return Promise.resolve({status:'complete',ticket:'c'.repeat(32),result:{id:'a'.repeat(64),applicable:true,manifest:{base_version:'test-r1',target_version:'test-r2',operations:[]}}});
    return Promise.resolve({});
  }};
@@ -34,6 +35,7 @@ FIXTURE = r'''async ([source,errors,lang,writable,running,baselineReady])=>{
  const M={injectCss(){const s=E('style',{},'.mud-card{border:1px solid var(--hairline);border-radius:12px}.mud-btn{border:1px solid var(--hairline);border-radius:8px;color:inherit}.mud-btn:disabled{opacity:.5}');document.head.append(s);},localizeMenu(){},uiLanguage:()=>lang};
  window.otaView=new Function('view','rpc','ui','request','poll','E','document','L','M',source)({extend:o=>o},rpc,ui,request,{add(){},remove(){}},E,document,L,M);
  document.body.append(otaView.render([messages,state,builder]));
+ window.seedGenerated=()=>{otaView.unload();document.body.replaceChildren();Object.assign(builder,{job:{status:'complete',mode:'current',task_id:'prior'},has_output:true,download:true,output_id:'b'.repeat(64),output_bytes:100,output:{id:'a'.repeat(64),task_id:'prior',base_version:'r1',target_version:'r2',files:1,bytes:100}});document.body.append(otaView.render([messages,state,builder]));};
  window.drop=(names,event='drop',id='ota-patch-upload')=>{const dt=new DataTransfer();for(const name of names)dt.items.add(new File(['fixture'],name,{type:'application/octet-stream'}));const e=new DragEvent(event,{bubbles:true,cancelable:true,dataTransfer:dt});document.querySelector('#'+id).dispatchEvent(e);return e.defaultPrevented;};
 }'''
 
@@ -165,6 +167,35 @@ def main():
                 page.wait_for_function('!!window.releasePreflight')
                 page.evaluate('otaView.unload();releasePreflight()');page.wait_for_timeout(25)
                 assert page.evaluate('uploads.length')==0
+                # Replacing a source clears the previous generated output only
+                # after the successful POST, for old/current/new source pickers.
+                for id in ('ota-new-upload','ota-current-upload','ota-old-upload'):
+                    setup();page.evaluate('seedGenerated()')
+                    if id=='ota-old-upload':page.locator('#ota-build-mode').select_option('pair')
+                    page.evaluate("id=>drop(['replacement.zip'],'drop',id)",id)
+                    page.wait_for_function('uploads.length===1')
+                    assert page.evaluate('builder.has_output')
+                    assert not page.evaluate("calls.some(x=>x[0]==='discard_generated')")
+                    refresh={'zh':'刷新生成状态','en':'Refresh generation status','tr':'Oluşturma durumunu yenile'}[lang]
+                    page.get_by_role('button',name=refresh,exact=True).click()
+                    page.wait_for_timeout(25)
+                    assert page.locator('#'+id).is_disabled(),'refresh must not unlock an active upload'
+                    assert page.locator('#ota-patch-upload').is_disabled()
+
+                    page.evaluate('finishUpload()')
+                    page.wait_for_function('!builder.has_output')
+                    assert page.evaluate("calls.filter(x=>x[0]==='discard_generated')[0][1][0]")=='b'*64
+                    assert not page.evaluate("calls.some(x=>['generate','start_generated','start'].includes(x[0]))")
+                setup();page.evaluate('seedGenerated();drop(["failed.zip"],"drop","ota-new-upload")')
+                page.wait_for_function('uploads.length===1');page.evaluate("finishUpload({failure:5,message:'Upload failed'})")
+                page.wait_for_function('!document.querySelector("#ota-new-upload").disabled')
+                assert page.evaluate('builder.has_output')
+                assert not page.evaluate("calls.some(x=>x[0]==='discard_generated')")
+                setup();page.evaluate('seedGenerated()');page.locator('#ota-new-upload').click()
+                page.wait_for_selector('#ota-full-file');page.locator('#modal button').first.click()
+                page.wait_for_function('!document.querySelector("#ota-new-upload").disabled')
+                assert page.evaluate('builder.has_output')
+                assert not page.evaluate("calls.some(x=>x[0]==='discard_generated')")
                 # Click-to-upload still targets the corresponding builder slot.
                 setup();page.locator('#ota-current-upload').click()
                 page.wait_for_selector('#ota-full-file')

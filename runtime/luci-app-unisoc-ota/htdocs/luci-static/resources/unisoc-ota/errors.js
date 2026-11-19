@@ -27,6 +27,7 @@ export function explainError(value, english = false) {
         message = text;
     } else {
         const rules = [
+            [/Full firmware inputs changed; generate a new patch/, '完整固件已重新上传，旧生成包已失效，请重新生成差分包。', 'The full firmware inputs changed. The previous patch is stale; generate a new patch.'],
             [/Release versions are identical/, '旧版和新版是同一个版本，请重新选择两份发行包。', 'The old and new releases are identical. Select two different releases.'],
             [/Unsupported OTA format/, '此补丁格式不受支持，请使用新版工具重新生成补丁。', 'This patch format is unsupported. Regenerate it with the latest tool.'],
             [/Unsafe |Invalid |Duplicate|excessive|Cyclic|escapes root|Cannot find payload content|Unsupported forward tar hardlink|Root image exceeds|Oversized package database/, '安装包或补丁的结构不符合要求。请确认文件完整，并选择可信的完整发行包或补丁。', 'The package or patch structure is invalid. Verify the file and select a trusted complete release or patch.'],

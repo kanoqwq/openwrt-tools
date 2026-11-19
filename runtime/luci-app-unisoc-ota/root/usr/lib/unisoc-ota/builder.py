@@ -112,7 +112,58 @@ class Builder:
     def retain_output(self):
         summary=self.output_summary()
         if summary:
+            try:
+                previous=read_record(self.result)
+                if previous.get('output_id')==self.output_id(self.output.stat()) and 'input_versions' in previous:
+                    summary['input_versions']=previous['input_versions']
+            except (OSError,ValueError):
+                pass
             atomic_json(self.result,dict(summary,output_id=self.output_id(self.output.stat())))
+
+    def upload_versions(self):
+        versions={}
+        for name in ('old.zip','new.zip'):
+            try: versions[name]=self.output_id((self.home/name).lstat())
+            except FileNotFoundError: pass
+        return versions
+
+    def output_current(self, stamp=None):
+        if stamp is None:
+            try: stamp=self.output.lstat()
+            except FileNotFoundError: return False
+        if not stat.S_ISREG(stamp.st_mode): return False
+        try: record=read_record(self.result)
+        except (OSError,ValueError): record={}
+        if record.get('output_id')==self.output_id(stamp) and isinstance(record.get('input_versions'),dict):
+            if record['input_versions']!=self.upload_versions(): return False
+        else:
+            # Legacy generation consumes new.zip. Its presence, or a newer
+            # old.zip, means a subsequent upload rather than the result's inputs.
+            for name in self.upload_versions():
+                if name=='new.zip' or (self.home/name).lstat().st_mtime_ns>stamp.st_mtime_ns: return False
+        job=self.job_status()
+        summary=self.output_summary(stamp) or {}
+        if job.get('mode') in ('current','pair') and job.get('task_id') and job['task_id']!=summary.get('task_id'):
+            return False
+        return True
+
+    def require_current_output(self):
+        if self.output.is_symlink() or not self.output.is_file():
+            raise ValueError('Generate a patch before inspecting it')
+        if not self.output_current():
+            raise ValueError('Full firmware inputs changed; generate a new patch')
+
+    def clear_output(self, clear_job=True):
+        # Called only under the common admission lock, never from read RPCs.
+        if self.output.is_symlink(): raise ValueError('Unsafe generated patch path')
+        self.output.unlink(missing_ok=True)
+        self.result.unlink(missing_ok=True)
+        if clear_job and self.job_status().get('mode')!='baseline': self.job.unlink(missing_ok=True)
+        inspection=self.state/'inspection.json'
+        try: record=read_record(inspection,1<<20)
+        except (OSError,ValueError): record={}
+        if record.get('source')=='generated': inspection.unlink(missing_ok=True)
+        sync_dir(self.home)
 
     def clean_interrupted_staging(self):
         # Only directories carrying our own marker are disposable. Do not touch
@@ -148,10 +199,11 @@ class Builder:
             stamp=None
         available=stamp is not None
         summary=self.output_summary(stamp) if available else None
+        fresh=available and self.output_current(stamp)
         return {'job':value,'baseline':self.baseline_status(),'uploads':uploads,
                 'has_output':available,'output_bytes':stamp.st_size if stamp else 0,
                 'output_id':self.output_id(stamp) if stamp else None,
-                'output':summary,'download':available}
+                'output':summary,'download':fresh,'stale_output':available and not fresh}
 
     @staticmethod
     def output_id(stamp):
@@ -170,9 +222,7 @@ class Builder:
                 raise ValueError('Unsafe generated patch path')
             if self.output.exists() and self.output_id(self.output.stat())!=expected:
                 raise ValueError('Generated patch changed; refresh before deleting it')
-            self.output.unlink(missing_ok=True)
-            self.result.unlink(missing_ok=True)
-            sync_dir(self.home)
+            self.clear_output()
         return self.status()
 
     def start(self, mode):
@@ -192,6 +242,7 @@ class Builder:
                     raise ValueError('Select and upload the required full firmware ZIP: '+name)
             if mode=='current' and not self.baseline_status()['available']:
                 raise ValueError('Import the current version full ZIP once to establish its clean baseline')
+            if self.output.exists() and not self.output_current(): self.clear_output()
             self.retain_output()
             task_id=os.urandom(16).hex()
             atomic_json(self.job,{'status':'running','phase':'queued','mode':mode,'task_id':task_id})
@@ -211,6 +262,7 @@ class Builder:
             self.prepare_home()
             task_id=self.job_status().get('task_id') or os.urandom(16).hex()
             try:
+                if self.output.exists() and not self.output_current(): self.clear_output(clear_job=False)
                 self.retain_output()
                 prepare_dependencies()
                 from generator.ota_package import Release, analyze
@@ -268,7 +320,7 @@ class Builder:
                         else:
                             atomic_json(self.baseline,index)
                     os.replace(folder/'update.ota',self.output)
-                    atomic_json(self.result,dict(summary,output_id=self.output_id(self.output.stat())))
+                    atomic_json(self.result,dict(summary,output_id=self.output_id(self.output.stat()),input_versions=self.upload_versions()))
                     atomic_json(self.job,dict(status='complete',mode=mode,**summary))
             except BaseException as error:
                 atomic_json(self.job,{'status':'failed','mode':mode,'task_id':task_id,'error':str(error)[-2000:]})
@@ -278,8 +330,7 @@ class Builder:
         with (self.state/'job.lock').open('a') as held:
             fcntl.flock(held,fcntl.LOCK_EX|fcntl.LOCK_NB)
             value=self.output_summary()
-            if self.output.is_symlink() or not self.output.is_file():
-                raise ValueError('Generate a patch before inspecting it')
+            self.require_current_output()
             with Patch(self.output) as patch:
                 if value and patch.id!=value['id']:
                     raise ValueError('Generated patch changed; generate it again')

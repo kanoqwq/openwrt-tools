@@ -99,7 +99,9 @@ def begin_inspection(source):
         expected = None
         if source == 'generated':
             from builder import Builder
-            job = Builder(ROOT or '/').output_summary()
+            builder=Builder(ROOT or '/')
+            builder.require_current_output()
+            job = builder.output_summary()
             expected = job['id'] if job else None
         ticket = os.urandom(16).hex()
         value = dict(status='running', ticket=ticket, source=source, phase='queued')
@@ -131,6 +133,9 @@ def inspect_worker(source, ticket, expected, lock_fd):
                 atomic_json(record, dict(value, phase='checking'))
                 result = inspection_summary(Engine().inspect(patch))
             after = path.stat()
+            if source=='generated':
+                from builder import Builder
+                Builder(ROOT or '/').require_current_output()
             if (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns) != (after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns):
                 raise ValueError('Upload changed during inspection; inspect this patch again')
             atomic_json(record, dict(value, status='complete', result=result))
@@ -250,6 +255,9 @@ def prepare_apply(path, expected_id, lock_fd):
     def phase(name):
         atomic_json(JOB, dict(status='running', command='apply', patch_id=expected_id, phase=name))
     try:
+        if Path(path)==STATE/'builder/update.ota':
+            from builder import Builder
+            Builder(ROOT or '/').require_current_output()
         phase('staging')
         frozen = stage_upload(path, expected_id, consume=Path(path).parent != STATE/'builder')
         phase('runtime')
@@ -290,6 +298,9 @@ def worker(command, path=None, expected_id=None):
         STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
         with (STATE/'job.lock').open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if Path(path)==STATE/'builder/update.ota':
+                from builder import Builder
+                Builder(ROOT or '/').require_current_output()
             atomic_json(JOB, dict(status='running', command=command,
                                   patch_id=expected_id, phase='queued'))
             try:

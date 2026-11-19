@@ -149,7 +149,7 @@ return view.extend({
         function cancelledUpload(e){var text=String(e&&e.message||e||'');return text==='Upload has been cancelled'||typeof _==='function'&&text===_('Upload has been cancelled');}
         function controls(){
             if(disposed)return;
-            var info=last.recovery||{}, writable=!busy&&!buildBusy&&!rebooting&&!info.pending&&L.hasViewPermission();
+            var info=last.recovery||{}, writable=!busy&&!buildBusy&&!activeUpload&&!rebooting&&!info.pending&&L.hasViewPermission();
             button.disabled=!writable;
             rollback.disabled=!writable||!(info.available===true||(!last.recovery&&last.transaction&&last.transaction.status==='complete'));
             discard.disabled=!writable||!(info.count>0);
@@ -473,7 +473,7 @@ return view.extend({
         function buildControls(){
             if(!buildMode)return;
             var ready=(buildState.baseline||{}).available===true,uploads=buildState.uploads||{};
-            var locked=busy||buildBusy||rebooting||!L.hasViewPermission()||(last.recovery||{}).pending||!!buildState.load_error;
+            var locked=busy||buildBusy||!!activeUpload||rebooting||!L.hasViewPermission()||(last.recovery||{}).pending||!!buildState.load_error;
             var pair=buildMode.value==='pair';
             buildInputs.setAttribute('data-pair',String(pair));
             oldRow.hidden=!pair;baselinePanel.hidden=pair||(ready&&!forceBaseline);baselineNote.hidden=pair;
@@ -508,7 +508,7 @@ return view.extend({
             }).finally(function(){buildRefreshing=false;controls();});
         };
         function downloadGenerated(){
-            if(!buildState.download)return;
+            if(!buildState.download||activeUpload)return;
             var job=buildState.output||buildState.job||{},name=job.base_version&&job.target_version?
                 ('OpenWrt-patch-'+job.base_version+'-to-'+job.target_version).replace(/[^a-zA-Z0-9._+-]/g,'_').slice(0,220)+'.ota':'OpenWrt-generated-patch.ota';
             var form=E('form',{method:'post',action:L.env.cgi_base+'/cgi-download',enctype:'application/x-www-form-urlencoded',style:'display:none'},[
@@ -519,7 +519,7 @@ return view.extend({
         }
         function generatedModal(){
             var job=buildState.output||buildState.job||{};
-            if(disposed||!buildState.download)return;
+            if(disposed||activeUpload||!buildState.download)return;
             var known=job.base_version&&job.target_version;
             shownBuild=job.task_id||job.id;
             ui.showModal(known?tr('差分包已生成，是否刷入？','Patch ready. Apply it now?','Yama hazır. Şimdi uygulansın mı?'):tr('保留的差分包','Retained patch','Saklanan yama'),[
@@ -532,7 +532,7 @@ return view.extend({
                         E('button',{type:'button',class:'mud-btn',click:downloadGenerated},tr('下载 .ota','Download .ota','.ota indir')),
                         E('button',{type:'button',class:'mud-btn warn',disabled:!L.hasViewPermission()||null,click:function(){ui.hideModal();return deleteGenerated.onclick();}},tr('删除生成包','Delete generated patch','Oluşturulan yamayı sil')),
                         E('button',{type:'button',class:'mud-btn mud-ota-primary',disabled:!L.hasViewPermission()||null,click:function(){
-                            if(busy||buildBusy||!L.hasViewPermission())return;ui.hideModal();return inspectPatch(true);
+                            if(busy||buildBusy||activeUpload||!L.hasViewPermission())return;ui.hideModal();return inspectPatch(true);
                         }},tr('检查并刷入','Check and apply','Kontrol et ve uygula'))])])]);
         }
         resultButton.onclick=generatedModal;
@@ -576,7 +576,8 @@ return view.extend({
             buildDetail.textContent=value.load_error?tr('差分生成功能暂不可用，请更新插件后重试。','Patch generation is unavailable. Update the plugin and retry.','Yama oluşturulamıyor. Eklentiyi güncelleyip yeniden deneyin.'):
                 buildBusy?(job.mode==='baseline'?tr('正在初始化当前版本基准，关闭网页不会中断任务。','Initializing clean baseline. Closing this page will not stop the task.','Temiz temel sürüm başlatılıyor. Sayfayı kapatmak görevi durdurmaz.'):tr('正在生成，请稍候；关闭网页不会中断任务。','Generating. You may close this page; the task will continue.','Oluşturuluyor. Sayfayı kapatsanız da görev sürer.'))+(job.path?'\n'+job.path:''):
                 job.status==='failed'?tr('生成失败：','Generation failed: ','Oluşturma başarısız: ')+(job.error||''):
-                job.status==='complete'?job.mode==='baseline'?tr('当前版本原始基准已保存。','Clean baseline saved.','Temiz temel sürüm kaydedildi.'):
+                value.stale_output?tr('固件已重新上传，请重新生成差分包。','Firmware inputs changed. Generate a new patch.','Ürün yazılımı girdileri değişti. Yeni bir yama oluşturun.'):
+            job.status==='complete'?job.mode==='baseline'?tr('当前版本原始基准已保存。','Clean baseline saved.','Temiz temel sürüm kaydedildi.'):
                 !value.download?tr('生成的差分包已删除，需要时可重新生成。','Generated patch deleted. Generate it again when needed.','Oluşturulan yama silindi. Gerektiğinde yeniden oluşturun.'):
                 tr('差分包已生成，可下载或检查后刷入。','Patch ready to download or check and apply.','Yama indirilebilir veya kontrol edilip uygulanabilir.'):
                 tr('选择完整固件 ZIP，生成可直接使用的 .ota。','Select full firmware ZIP files to generate a directly usable .ota.','Tam ZIP dosyalarını seçerek doğrudan kullanılabilir .ota oluşturun.');
@@ -596,15 +597,20 @@ return view.extend({
         function uploadFull(name,target,file,hint){
             if(disposed||target.disabled||busy||buildBusy||rebooting||!L.hasViewPermission())return Promise.resolve();
             if(target===oldUpload&&buildMode.value!=='pair'||target===currentUpload&&baselinePanel.hidden)return Promise.resolve();
+            var previousOutput=null;
             clearNotice();activeUpload=target;buildBusy=true;controls();
             return uploadFile('/etc/unisoc-ota/builder/'+name,target,file,hint,zipHintText,function(){
                 return callBuildStatus().then(function(r){
                     if((r.job||{}).status==='running')
                         throw new Error(tr('生成任务正在运行，请等待完成后再上传。','Generation is running. Wait until it finishes before uploading.','Oluşturma sürüyor. Yüklemeden önce tamamlanmasını bekleyin.'));
+                    previousOutput=r.output_id||null;
                 });
             }).then(function(){
                 if(disposed)return;
-                return callBuildStatus();
+                // Replace a source only after upload succeeds. Cancellation or
+                // upload failure must not delete the previous generated patch.
+                shownBuild=null;
+                return previousOutput?callDiscardGenerated(previousOutput).then(error):callBuildStatus();
             }).then(function(r){if(!disposed)paintBuild(r,false);}).catch(function(e){
                 if(disposed)return;
                 buildBusy=false;controls();
@@ -620,7 +626,7 @@ return view.extend({
         }
         wireZip(oldUpload,'old.zip',oldHint);wireZip(currentUpload,'old.zip',currentHint);wireZip(newUpload,'new.zip',newHint);
         function beginBuild(mode){
-            if(busy||buildBusy)return Promise.resolve();
+            if(busy||buildBusy||activeUpload)return Promise.resolve();
             var before=(buildState.job||{}).task_id;
             clearNotice();buildBusy=true;controls();
             paintBuild(Object.assign({},buildState,{job:{status:'running',mode:mode,phase:'queued'},download:false}),false,true);

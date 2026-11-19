@@ -159,18 +159,73 @@ class BuilderTests(unittest.TestCase):
                 self.assertEqual(len(ack['task_id']),32)
             result=self.run_job('baseline');self.assertEqual(result['job']['status'],'complete',result)
 
-    def test_failed_generation_and_baseline_repair_keep_previous_download_and_review(self):
+    def test_new_upload_invalidates_old_result_even_if_regeneration_fails(self):
         self.upload('old','new');good=self.run_job('pair')
-        original=self.builder.output.read_bytes()
-        self.upload('old');baseline=self.run_job('baseline')
-        self.assertTrue(baseline['download']);self.assertEqual(baseline['output']['id'],good['job']['id'])
-        self.assertEqual(self.builder.inspect_generated()['id'],good['job']['id'])
+        self.assertTrue(good['download'])
+        baseline=self.builder.baseline.read_bytes()
         self.upload('new');(self.builder.home/'new.zip').write_bytes(b'bad upload')
+        self.assertFalse(self.builder.status()['download'])
+        with self.assertRaisesRegex(ValueError,'inputs changed'):self.builder.inspect_generated()
         failure=self.run_job('current')
-        self.assertEqual(failure['job']['status'],'failed');self.assertTrue(failure['download'])
-        self.assertEqual(failure['output']['base_version'],'mu300-r1')
-        self.assertEqual(self.builder.output.read_bytes(),original)
-        self.assertEqual(self.builder.inspect_generated()['id'],good['job']['id'])
+        self.assertEqual(failure['job']['status'],'failed')
+        self.assertFalse(failure['download']);self.assertFalse(self.builder.output.exists())
+        self.assertEqual(self.builder.baseline.read_bytes(),baseline)
+        self.assertEqual((self.root/'etc/config/wireless').read_bytes(),b'user password')
+
+    def test_upload_invalidation_is_not_dependent_on_wall_clock_order(self):
+        self.upload('old','new');self.run_job('pair')
+        self.upload('new');os.utime(self.builder.home/'new.zip',ns=(1,1))
+        self.assertFalse(self.builder.status()['download'])
+        with self.assertRaisesRegex(ValueError,'inputs changed'):self.builder.inspect_generated()
+
+    def test_upload_after_applying_old_patch_generates_for_the_new_target(self):
+        self.upload('old','new');first=self.run_job('pair')
+        with Patch(self.builder.output) as patch:self.builder.engine.apply(patch)
+        baseline=self.builder.baseline.read_bytes()
+        release=self.folder/'third'
+        mu_release(release,'mu300-r3',{'usr/lib/test':b'third','usr/lib/untouched':b'original',
+                                     'etc/config/wireless':b'factory'})
+        target=self.builder.home/'new.zip'
+        with zipfile.ZipFile(target,'w') as archive:
+            for path in release.rglob('*'):
+                if path.is_file():archive.write(path,path.relative_to(release).as_posix())
+        self.assertFalse(self.builder.status()['download'])
+        self.assertTrue(self.builder.status()['stale_output'])
+        self.builder.discard_generated(first['output_id'])
+        self.assertEqual(self.builder.baseline.read_bytes(),baseline)
+        next_result=self.run_job('current')
+        self.assertEqual(next_result['job']['base_version'],'mu300-r2')
+        self.assertEqual(next_result['job']['target_version'],'mu300-r3')
+        self.assertTrue(self.builder.inspect_generated()['applicable'])
+
+    def test_old_review_cannot_start_inspection_or_apply_after_upload(self):
+        import importlib.util
+        self.upload('old','new');ready=self.run_job('pair');self.upload('new')
+        source=Path(__file__).resolve().parents[1]/'runtime/luci-app-unisoc-ota/root/usr/lib/unisoc-ota/rpc.py'
+        spec=importlib.util.spec_from_file_location('stale_builder_rpc',source)
+        rpc=importlib.util.module_from_spec(spec);spec.loader.exec_module(rpc)
+        rpc.ROOT=str(self.root);rpc.STATE=self.builder.state;rpc.JOB=self.builder.state/'job.json'
+        with patch.object(rpc.subprocess,'Popen') as launch:
+            with self.assertRaisesRegex(ValueError,'inputs changed'):rpc.begin_inspection('generated')
+            with self.assertRaisesRegex(ValueError,'inputs changed'):
+                rpc.worker('apply',str(self.builder.output),ready['job']['id'])
+            launch.assert_not_called()
+
+    def test_unchanged_leftover_upload_does_not_invalidate_new_result(self):
+        self.upload('old');self.run_job('baseline')
+        self.upload('old','new');ready=self.run_job('current')
+        self.assertTrue(ready['download'])
+        self.assertEqual(self.builder.inspect_generated()['id'],ready['job']['id'])
+        self.upload('old');self.assertFalse(self.builder.status()['download'])
+
+    def test_delete_clears_old_result_and_generated_inspection_but_preserves_upload_review(self):
+        for source in ('generated','upload'):
+            self.upload('old','new');ready=self.run_job('pair')
+            review=self.builder.state/'inspection.json'
+            atomic_json(review,{'source':source,'status':'complete','ticket':'a'*32})
+            self.builder.discard_generated(ready['output_id'])
+            self.assertEqual(review.exists(),source=='upload')
+            self.assertEqual(self.builder.status()['job']['status'],'idle')
 
     def test_cleanup_only_removes_owned_interrupted_scratch_under_admission_lock(self):
         owned=self.builder.home/'.build-owned';owned.mkdir()
@@ -212,7 +267,7 @@ class BuilderTests(unittest.TestCase):
         deleted=self.builder.discard_generated(ready['output_id'])
         self.assertFalse(self.builder.output.exists());self.assertFalse(deleted['has_output']);self.assertFalse(deleted['download'])
         self.assertEqual(deleted['output_bytes'],0);self.assertIsNone(deleted['output_id'])
-        self.assertEqual(deleted['job']['id'],ready['job']['id'])
+        self.assertEqual(deleted['job']['status'],'idle')
         self.assertEqual(self.builder.baseline.read_bytes(),baseline);self.assertTrue(deleted['baseline']['available'])
         self.assertTrue((self.builder.home/'new.zip').exists());self.assertEqual((recovery/'keep').read_bytes(),b'recovery')
         self.assertEqual((self.root/'etc/mu300/release.json').read_bytes(),version)
@@ -229,13 +284,12 @@ class BuilderTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'recovery'):self.builder.discard_generated(token)
         self.assertTrue(self.builder.output.exists())
 
-    def test_failed_generation_retained_output_remains_deletable_and_stale_confirmation_is_rejected(self):
-        self.builder.output.write_bytes(b'previous output')
-        atomic_json(self.builder.job,{'status':'failed','error':'bad newer upload'})
-        ready=self.builder.status();self.assertTrue(ready['download']);self.assertTrue(ready['has_output'])
-        other=self.builder.home/'other';other.write_bytes(b'new output');os.replace(other,self.builder.output)
+    def test_stale_output_is_hidden_but_identity_checked_deletion_remains_available(self):
+        self.upload('old','new');self.run_job('pair');self.upload('new')
+        ready=self.builder.status();self.assertFalse(ready['download']);self.assertTrue(ready['has_output'])
+        self.builder.output.write_bytes(self.builder.output.read_bytes()+b'changed')
         with self.assertRaisesRegex(ValueError,'changed'):self.builder.discard_generated(ready['output_id'])
-        self.assertEqual(self.builder.output.read_bytes(),b'new output')
+        self.assertTrue(self.builder.output.exists())
         token=self.builder.status()['output_id'];self.builder.discard_generated(token)
         self.assertFalse(self.builder.output.exists())
 
