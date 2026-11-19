@@ -9,7 +9,7 @@ import unittest
 import zipfile
 
 from test_ota import mu_release, analyze, Patch, Engine
-from backend.ota_engine import canonical, package_records, package_replacements
+from backend.ota_engine import canonical, package_records, package_replacements, shadowed_dnsmasq
 
 
 def record(name, version='1', provides=''):
@@ -17,7 +17,7 @@ def record(name, version='1', provides=''):
             f'F:usr/sbin\nR:dnsmasq\nF:lib/apk/packages\nR:{name}.conffiles\n')
 
 
-def release(path, version, full=False, revision='1'):
+def release(path, version, full=False, revision='1', extra=None):
     name = 'dnsmasq-full' if full else 'dnsmasq'
     files = {
         'usr/sbin/dnsmasq': (name+'-'+revision).encode(),
@@ -29,6 +29,7 @@ def release(path, version, full=False, revision='1'):
         'etc/config/dhcp': b'factory DHCP settings',
         'etc/dnsmasq.conf': b'factory DNS settings',
     }
+    files.update(extra or {})
     mu_release(path, version, files)
     (path/'payload/busybox').write_bytes(b'fixture helper')
     return files
@@ -36,6 +37,84 @@ def release(path, version, full=False, revision='1'):
 
 @unittest.skipUnless(sys.platform == 'linux', 'POSIX OTA filesystem semantics')
 class PackageVariant(unittest.TestCase):
+    def test_existing_duplicate_is_repaired_even_without_database_changes_in_patch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            base=Path(folder)
+            old=release(base/'old', 'mu300-r1', True)
+            release(base/'new', 'mu300-r2', True, extra={'usr/lib/wifi-update':b'new Wi-Fi component'})
+            live=base/'live'
+            for name,raw in old.items():
+                path=live/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(raw)
+            identity=live/'etc/mu300/release.json';identity.parent.mkdir(parents=True)
+            identity.write_bytes((base/'old/desktop/release.json').read_bytes())
+            db=live/'lib/apk/db/installed'
+            db.write_bytes(db.read_bytes()+b'\n'+record('dnsmasq').encode())
+            legacy=live/'lib/apk/packages/dnsmasq.conffiles';legacy.write_bytes(b'legacy metadata')
+            world=live/'etc/apk/world';world.write_text('dnsmasq\ndnsmasq-full@user-feed\nuser-plugin\n')
+            config=live/'etc/config/dhcp';config.write_bytes(b'custom DHCP leases and resolver')
+            output=base/'update.ota';result=analyze(base/'old',base/'new',output)
+            self.assertNotIn('lib/apk/db/installed',{op['path'] for op in result['manifest']['operations']})
+            with Patch(output) as patch:Engine(live).apply(patch)
+            self.assertNotIn('dnsmasq',package_records(db.read_bytes()))
+            self.assertIn('dnsmasq-full',package_records(db.read_bytes()))
+            self.assertEqual(world.read_text(),'dnsmasq-full@user-feed\nuser-plugin\n')
+            self.assertFalse(legacy.exists())
+            self.assertEqual((live/'usr/sbin/dnsmasq').read_bytes(),b'dnsmasq-full-1')
+            self.assertEqual(config.read_bytes(),b'custom DHCP leases and resolver')
+
+    def test_duplicate_user_full_keeps_its_program_and_full_metadata(self):
+        with tempfile.TemporaryDirectory() as folder:
+            base=Path(folder);old=release(base/'old','mu300-r1')
+            release(base/'new','mu300-r2',True)
+            live=base/'live'
+            for name,raw in old.items():
+                path=live/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(raw)
+            identity=live/'etc/mu300/release.json';identity.parent.mkdir(parents=True)
+            identity.write_bytes((base/'old/desktop/release.json').read_bytes())
+            db=live/'lib/apk/db/installed'
+            full=record('dnsmasq-full','9','dnsmasq=9')
+            db.write_bytes(db.read_bytes()+b'\n'+full.encode())
+            (live/'usr/sbin/dnsmasq').write_bytes(b'user full program')
+            metadata=live/'lib/apk/packages/dnsmasq-full.conffiles';metadata.write_bytes(b'user full metadata')
+            output=base/'update.ota';analyze(base/'old',base/'new',output)
+            with Patch(output) as patch:Engine(live).apply(patch)
+            packages=package_records(db.read_bytes())
+            self.assertEqual(set(packages),{'dnsmasq-full'})
+            self.assertIn('V:9',packages['dnsmasq-full'])
+            self.assertEqual((live/'usr/sbin/dnsmasq').read_bytes(),b'user full program')
+            self.assertEqual(metadata.read_bytes(),b'user full metadata')
+            self.assertEqual((live/'etc/apk/world').read_text(),'dnsmasq-full\n')
+
+    def test_shadowed_provider_requires_declared_alias_and_complete_payload_ownership(self):
+        basic=record('dnsmasq')+'F:lib/upgrade/keep.d\nR:dnsmasq\n'
+        full=record('dnsmasq-full',provides='dnsmasq=2')+'F:lib/upgrade/keep.d\nR:dnsmasq-full\n'
+        self.assertEqual(shadowed_dnsmasq({'dnsmasq':basic,'dnsmasq-full':full}),{'dnsmasq'})
+        self.assertEqual(shadowed_dnsmasq({'dnsmasq':basic,'dnsmasq-full':full},{'dnsmasq':basic}),set())
+        self.assertEqual(shadowed_dnsmasq({'dnsmasq':basic,'dnsmasq-full':record('dnsmasq-full')}),set())
+        self.assertEqual(shadowed_dnsmasq({'dnsmasq':basic+'F:usr/bin\nR:user-command\n','dnsmasq-full':full}),set())
+
+    def test_failed_metadata_repair_restores_records_world_and_keeps_dns_available(self):
+        with tempfile.TemporaryDirectory() as folder:
+            base=Path(folder);old=release(base/'old','mu300-r1',True)
+            release(base/'new','mu300-r2',True,extra={'usr/lib/wifi-update':b'changed'})
+            live=base/'live'
+            for name,raw in old.items():
+                path=live/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(raw)
+            identity=live/'etc/mu300/release.json';identity.parent.mkdir(parents=True)
+            identity.write_bytes((base/'old/desktop/release.json').read_bytes())
+            db=live/'lib/apk/db/installed';db.write_bytes(db.read_bytes()+b'\n'+record('dnsmasq').encode())
+            world=live/'etc/apk/world';world.write_bytes(b'dnsmasq\ndnsmasq-full\n')
+            before_db,before_world=db.read_bytes(),world.read_bytes()
+            output=base/'update.ota';analyze(base/'old',base/'new',output)
+            def interrupt(done,total,name):
+                if name=='lib/apk/db/installed':raise RuntimeError('simulated update interruption')
+            with Patch(output) as patch, self.assertRaisesRegex(RuntimeError,'simulated update interruption'):
+                Engine(live).apply(patch,progress=interrupt)
+            self.assertEqual(db.read_bytes(),before_db)
+            self.assertEqual(world.read_bytes(),before_world)
+            self.assertEqual((live/'usr/sbin/dnsmasq').read_bytes(),b'dnsmasq-full-1')
+            self.assertEqual((live/'etc/config/dhcp').read_bytes(),old['etc/config/dhcp'])
+
     def test_runtime_baseline_rejects_duplicate_wrong_target_and_nonfile(self):
         with tempfile.TemporaryDirectory() as folder:
             base=Path(folder)

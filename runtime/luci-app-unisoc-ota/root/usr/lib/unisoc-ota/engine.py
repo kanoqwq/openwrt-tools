@@ -117,6 +117,35 @@ def package_replacements(installed, target, removed):
     return replaced
 
 
+def shadowed_dnsmasq(installed, target=None):
+    """Retire a legacy duplicate owner, never the running DNS provider/files.
+
+    Old merges could leave both variants installed. APK then removes the
+    basic record's files even though dnsmasq-full still owns those paths.
+    Only the declared full provider covering every basic payload is eligible.
+    """
+    if target and 'dnsmasq-full' not in target:
+        return set()
+    basic, full = installed.get('dnsmasq'), installed.get('dnsmasq-full')
+    if not basic or not full:
+        return set()
+    provides = next((s[2:].split() for s in full.splitlines() if s.startswith('p:')), [])
+    if 'dnsmasq' not in {re.split(r'[<>=~]', p, 1)[0] for p in provides}:
+        return set()
+    payload = {p for p in package_paths(basic)
+               if not p.startswith(('lib/apk/packages/', 'lib/upgrade/keep.d/'))}
+    return {'dnsmasq'} if payload and payload <= package_paths(full) else set()
+
+
+def full_dnsmasq_world(raw):
+    """Keep other constraints/pins; select the actual full provider once."""
+    lines = [s for s in raw.decode().splitlines()
+             if re.split(r'[<>=~@]', s, 1)[0] != 'dnsmasq']
+    if not any(re.split(r'[<>=~@]', s, 1)[0] == 'dnsmasq-full' for s in lines):
+        lines.append('dnsmasq-full')
+    return ('\n'.join(lines)+'\n').encode()
+
+
 def merge_scripts(current, target):
     members = {}
     for raw in (current, target):
@@ -485,14 +514,15 @@ class Engine:
         m = patch.manifest
         installed_path = self.root/'lib/apk/db/installed'
         installed = package_records(installed_path.read_bytes()) if installed_path.is_file() else {}
-        extra_packages = set(installed)-set(m.get('base_packages', {}))
         removed_base = set(m.get('base_packages', {}))-set(m.get('target_packages', {}))
         target_records = {}
         for op in m['operations']:
             if op.get('merge') == 'apk-db' and op.get('after'):
                 target_records = package_records(patch.archive.read('blobs/'+op['after']['sha256']))
                 break
-        replaced = package_replacements(installed, target_records, removed_base)
+        shadowed = shadowed_dnsmasq(installed, target_records)
+        extra_packages = set(installed)-set(m.get('base_packages', {}))-shadowed
+        replaced = package_replacements(installed, target_records, removed_base) | shadowed
         retained = extra_packages | (removed_base - replaced)
         owned = set()
         for name in retained:
@@ -568,6 +598,33 @@ class Engine:
                     actual = descriptor(self.path(name))
                     if actual and actual['kind'] != 'dir':
                         ops.append(dict(path=name, before=actual, after=None))
+        if shadowed:
+            # A Wi-Fi-only patch may not change clean-release APK metadata.
+            # Repair the live duplicate in this same journaled transaction,
+            # including rollback, without touching DNS binaries or config.
+            for name in ('lib/apk/db/installed', 'etc/apk/world'):
+                op = next((o for o in ops if o['path'] == name), None)
+                before = descriptor(self.path(name))
+                value = op['after'] if op else before
+                if value and value['kind'] != 'file':
+                    raise ValueError('Package metadata is not a file: '+name)
+                if op:
+                    raw = generated.get(value['sha256'])
+                    if raw is None: raw = patch.archive.read('blobs/'+value['sha256'])
+                else:
+                    raw = self.path(name).read_bytes() if before else b''
+                if name == 'lib/apk/db/installed':
+                    records = package_records(raw)
+                    raw = ('\n\n'.join(r.rstrip('\n') for n,r in records.items()
+                                      if n not in shadowed)+'\n\n').encode()
+                else:
+                    raw = full_dnsmasq_world(raw)
+                after = dict(value or dict(kind='file', mode=0o644, uid=0, gid=0, xattrs={}),
+                             size=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+                generated[after['sha256']] = raw
+                if op: ops.remove(op)
+                if before != after:
+                    ops.append(dict(path=name, before=before, after=after))
         # A directory may have existed in both clean releases but be absent
         # on this device. Include missing ancestors in the transaction, too.
         planned = {op['path']: op for op in ops}
