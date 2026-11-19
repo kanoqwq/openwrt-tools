@@ -27,7 +27,7 @@ FIXTURE = r'''async ([source,errors,lang,writable,running,baselineReady])=>{
  const request={post:(url,data,options)=>{
    uploads.push({url,path:data.get('filename'),session:data.get('sessionid'),name:data.get('filedata').name,timeout:options.timeout});
    options.progress({loaded:50,total:100});
-   return new Promise((resolve,reject)=>{window.finishUpload=()=>{if(!failUpload&&data.get('filename').includes('/builder/'))builder.uploads[data.get('filename').split('/').at(-1)]=100;resolve({json:()=>failUpload?{failure:2,message:'Fixture upload rejected'}:{size:100}});};window.rejectUpload=reject;});
+   return new Promise((resolve,reject)=>{window.finishUpload=(reply)=>{if(!failUpload&&!reply?.failure&&data.get('filename').includes('/builder/'))builder.uploads[data.get('filename').split('/').at(-1)]=100;resolve({json:()=>reply||(failUpload?{failure:2,message:'Fixture upload rejected'}:{size:100})});};window.rejectUpload=reject;});
  }};
  const messages=await import('data:text/javascript;base64,'+btoa(unescape(encodeURIComponent(errors))));
  const L={env:{cgi_base:'/custom/cgi'},hasViewPermission:()=>writable};
@@ -160,10 +160,52 @@ def main():
                 assert page.evaluate('uploads.length')==0
                 # Click-to-upload still targets the corresponding builder slot.
                 setup();page.locator('#ota-current-upload').click()
-                page.wait_for_function('pickers.length===1')
-                assert page.evaluate('pickers[0]')=='/etc/unisoc-ota/builder/old.zip'
-                page.evaluate('finishPicker()')
+                page.wait_for_selector('#ota-full-file')
+                assert not page.evaluate("calls.some(x=>x[0]==='build_status')"),'preparation must wait for selection'
+                page.locator('#ota-full-file').set_input_files(dict(name='baseline.zip',mimeType='application/zip',buffer=b'PK fixture'))
+                page.locator('#ota-full-file-confirm').click()
+                page.wait_for_function('uploads.length===1')
+                assert page.evaluate('uploads[0].path')=='/etc/unisoc-ota/builder/old.zip'
+                page.evaluate('finishUpload()')
                 page.wait_for_function('!document.querySelector("#ota-current-upload").disabled')
+                # Cancel and unload release the picker without uploading/errors.
+                setup();page.locator('#ota-current-upload').click()
+                page.wait_for_selector('#ota-full-file');page.locator('#modal button').first.click()
+                page.wait_for_function('!document.querySelector("#ota-current-upload").disabled')
+                assert page.evaluate('uploads.length')==0
+                assert page.locator('[role="alert"]').count()==0
+                setup();page.locator('#ota-current-upload').click()
+                page.wait_for_selector('#ota-full-file');page.evaluate('otaView.unload()')
+                page.wait_for_timeout(25);assert page.evaluate('uploads.length')==0
+                assert page.locator('#modal').count()==0
+                # A job starting during file selection still blocks the upload.
+                setup();page.locator('#ota-current-upload').click()
+                page.locator('#ota-full-file').set_input_files(dict(name='baseline.zip',mimeType='application/zip',buffer=b'PK fixture'))
+                page.evaluate("builder.job={status:'running'}")
+                page.locator('#ota-full-file-confirm').click();page.wait_for_timeout(25)
+                assert page.evaluate('uploads.length')==0
+                assert not page.evaluate("calls.some(x=>['generate','start','start_generated'].includes(x[0]))")
+                # Parent lost after transfer started: exactly one reprepare/retry.
+                setup();page.evaluate("drop(['full.zip'],'drop','ota-current-upload')")
+                page.wait_for_function('uploads.length===1')
+                page.evaluate("finishUpload({failure:2,message:'Failed to open target file'})")
+                page.wait_for_function('uploads.length===2')
+                assert page.evaluate("calls.filter(x=>x[0]==='build_status').length")>=2
+                page.evaluate('finishUpload()')
+                page.wait_for_function('!document.querySelector("#ota-current-upload").disabled')
+                assert page.locator('[role="alert"]').count()==0
+                # Other errno values and a repeated ENOENT are never retried forever.
+                for code,attempts in ((28,1),(30,1),(13,1),(2,2)):
+                    setup();page.evaluate("drop(['full.zip'],'drop','ota-current-upload')")
+                    for attempt in range(attempts):
+                        page.wait_for_function('n=>uploads.length===n',arg=attempt+1)
+                        page.evaluate("code=>finishUpload({failure:code,message:'Failed to open target file'})",code)
+                    page.wait_for_function('!document.querySelector("#ota-current-upload").disabled')
+                    assert page.evaluate('uploads.length')==attempts
+                    alert=page.locator('[role="alert"]');assert alert.count()==1
+                    assert 'errno='+str(code) in alert.text_content()
+                    assert '/etc/unisoc-ota/builder/old.zip' in alert.text_content()
+                    assert not page.evaluate("calls.some(x=>['generate','start','start_generated'].includes(x[0]))")
                 assert not errors,errors
                 page.close()
         browser.close()

@@ -42,9 +42,13 @@ function fixture(write=true, initial=idle(), locale="en", initialBuild={job:{sta
         if(method==='rollback'&&state.rejectRollback)return Promise.reject(Error('rollback rejected'));
         return Promise.resolve({status:'running'});
     }}};
-    const ui={uploadFile:(name)=>{state.uploadPaths.push(name);state.uploads=(state.uploads||0)+1;if(state.onUpload)state.onUpload(name);return state.uploadPromise||Promise.resolve();},showModal:(title,nodes)=>{state.modalTitle=title;state.modal=nodes;},hideModal:()=>{state.modal=[];},addNotification:(_a,node)=>{const value=node.children;state.notifications.push(value);return {remove:()=>{const i=state.notifications.indexOf(value);if(i>=0)state.notifications.splice(i,1);}};},awaitReconnect:()=>{state.reconnects++;}};
+    const ui={uploadFile:(name)=>{state.uploadPaths.push(name);state.uploads=(state.uploads||0)+1;if(state.onUpload)state.onUpload(name);return state.uploadPromise||Promise.resolve();},showModal:(title,nodes)=>{state.modalTitle=title;state.modal=nodes;
+        const input=all(nodes).find(n=>n.id==='ota-full-file');
+        if(input)queueMicrotask(()=>{if(state.onPicker)state.onPicker();input.files=[new File(['fixture'],'release.zip')];input.onchange();all(nodes).find(n=>n.id==='ota-full-file-confirm').onclick();});
+    },hideModal:()=>{state.modal=[];},addNotification:(_a,node)=>{const value=node.children;state.notifications.push(value);return {remove:()=>{const i=state.notifications.indexOf(value);if(i>=0)state.notifications.splice(i,1);}};},awaitReconnect:()=>{state.reconnects++;}};
     state.cancelText=locale==='zh'?'上传已被取消':locale==='tr'?'Yükleme iptal edildi':'Upload has been cancelled';
-    const view=new Function('view','rpc','ui','poll','E','document','L','M','_',source)({extend:v=>v},rpc,ui,{add:fn=>state.ticks.add(fn),remove:fn=>state.ticks.delete(fn)},E,{documentElement:{lang:'en'},body:{appendChild:()=>{}}},{env:{cgi_base:'/cgi-bin'},hasViewPermission:()=>state.writable},{injectCss:()=>{state.themeInjected=true;},localizeMenu:()=>{},uiLanguage:()=>locale},text=>text==='Upload has been cancelled'?state.cancelText:text);
+    const request={post:(_url,data)=>{const name=data.get('filename');state.uploadPaths.push(name);state.uploads=(state.uploads||0)+1;if(state.onUpload)state.onUpload(name);return (state.uploadPromise||Promise.resolve()).then(()=>({json:()=>({size:100})}));}};
+    const view=new Function('view','rpc','ui','request','poll','E','document','L','M','_',source)({extend:v=>v},rpc,ui,request,{add:fn=>state.ticks.add(fn),remove:fn=>state.ticks.delete(fn)},E,{documentElement:{lang:'en'},body:{appendChild:()=>{}}},{env:{cgi_base:'/cgi-bin'},hasViewPermission:()=>state.writable},{injectCss:()=>{state.themeInjected=true;},localizeMenu:()=>{},uiLanguage:()=>locale},text=>text==='Upload has been cancelled'?state.cancelText:text);
     const all=nodes=>nodes.flatMap(n=>!n||typeof n!=='object'?[]:[n,...all(Array.isArray(n.children)?n.children:[])]);
     const root=view.render([messages,state.status,state.buildStatus]);
     state.button=name=>all([root,...state.modal]).find(n=>n.tag==='button'&&(n['aria-label']===name||n.children===name));
@@ -475,6 +479,7 @@ async function main(){
             const page=fixture();page.buildMode().value=mode;page.buildMode().onchange();
             const dir=path.join(uploadRoot,'builder');
             fs.mkdirSync(dir,{recursive:true});fs.rmdirSync(dir);
+            page.onPicker=()=>{if(fs.existsSync(dir))fs.rmdirSync(dir);};
             page.onBuildStatus=()=>fs.mkdirSync(dir,{recursive:true});
             page.onUpload=target=>{
                 assert.equal(page.calls.at(-1),'build_status','Upload started before backend directory preparation');
@@ -506,6 +511,7 @@ async function main(){
     preparing.onBuildStatus=()=>preparing.buildStatus=new Promise(resolve=>allowPreparation=resolve);
     const firstUpload=preparing.button('Import current full ZIP').onclick();
     await preparing.button('Import current full ZIP').onclick();
+    await preparing.flush();
     assert.equal(preparing.calls.filter(x=>x==='build_status').length,1,'Double click started a second preparation');
     preparing.onBuildStatus=null;preparing.buildStatus={job:{status:'idle'},baseline:{available:false},uploads:{}};
     allowPreparation(preparing.buildStatus);await firstUpload;assert.equal(preparing.uploads,1);

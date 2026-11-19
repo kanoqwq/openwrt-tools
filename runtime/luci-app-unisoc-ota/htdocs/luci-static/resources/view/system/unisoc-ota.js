@@ -107,7 +107,7 @@ return view.extend({
         var discard=action(tr('删除恢复副本','Delete recovery copy','Kurtarma kopyasını sil'),'trash','warn');
         var reboot=action(tr('重启设备','Reboot','Yeniden başlat'),'power');
         var buildState=loaded[2]||{job:{status:'idle'},baseline:{available:false}}, buildBusy=false, buildTick=null, shownBuild=null;
-        var forceBaseline=false, baselineTask=null, uncertainBuild=null, buildRefreshing=false;
+        var forceBaseline=false, baselineTask=null, uncertainBuild=null, buildRefreshing=false, cancelFullPicker=null;
         var busy=false, watching=false, pollError=false, rebooting=false, disposed=false, pollTick, last=state, localPhase=null, pendingAction=null, pendingError=null;
         var initialRetries=state.load_error?15:0, notice=null, inspectionTick=null, inspectionDone=null;
         var workingTitle=E('strong'), workingDetail=E('p',{class:'mud-note'});
@@ -135,7 +135,14 @@ return view.extend({
                 tr('正在处理，请稍候。更新开始后关闭网页不会中断任务。','Please wait. Once started, the update continues even if you close this page.','Lütfen bekleyin. Başladıktan sonra sayfa kapatılsa da güncelleme sürer.');
         }
         function phase(value){if(disposed)return;localPhase=value;if(!value){show(last);return;}clearNotice();busy=true;progress(last);controls();detail.textContent=phaseTitle(value);badge.setAttribute('data-state','running');badge.textContent=phaseTitle(value);}
-        function errorNode(e){var info=messages.explainError(e,!zh);if(/Incomplete patch inspection response|Patch inspection result is/.test(info.details))info.message=tr('补丁校验结果缺失或不完整，未开始更新。请重新检查补丁。','Patch inspection is missing or incomplete. No update started. Inspect the patch again.','Yama kontrol sonucu eksik veya bozuk. Güncelleme başlamadı. Yamayı yeniden kontrol edin.');if(/Patch inspection did not return a task ticket/.test(info.details))info.message=tr('未收到校验任务编号，未开始更新。请重新检查补丁。','No inspection task ID was received. No update started. Inspect the patch again.','Kontrol görevi kimliği alınamadı. Güncelleme başlamadı. Yamayı yeniden kontrol edin.');if(/Patch inspection task state is invalid/.test(info.details))info.message=tr('补丁校验任务状态无效，未开始更新。请重新检查补丁。','The inspection task state is invalid. No update started. Inspect the patch again.','Kontrol görevi durumu geçersiz. Güncelleme başlamadı. Yamayı yeniden kontrol edin.');if(/Inspect this patch|Upload differs/.test(info.details))info.message=tr('补丁检查结果已失效或文件已变化，未开始写入。请重新导入并检查。','The review is stale or the file changed. No writes started. Import and inspect it again.','Kontrol geçersiz veya dosya değişti. Yazma başlamadı. Yeniden içe aktarıp kontrol edin.');if(/There is no item named ['"]manifest\.json['"]/.test(info.details))info.message=tr('请选择有效的 update.ota 或包含它的更新 ZIP；完整固件请使用下方的差分生成功能。','Select a valid update.ota or an update ZIP containing it. Use the generator below for full firmware ZIPs.','Geçerli update.ota veya onu içeren güncelleme ZIP dosyasını seçin.');if(/ZIP contains no OTA/.test(info.details))info.message=tr('此 ZIP 不包含 .ota；完整固件请使用下方的差分生成功能。','This ZIP has no .ota. For full firmware, use the generator below.','Bu ZIP .ota içermiyor. Tam sürüm için aşağıdaki oluşturucuyu kullanın.');if(/multiple OTA/.test(info.details))info.message=tr('ZIP 中有多个 .ota，请单独选择需要的补丁。','This ZIP contains multiple .ota files. Select the desired patch directly.','ZIP birden fazla .ota içeriyor. İstenen yamayı doğrudan seçin.');if(/Recovery copy was deleted/.test(info.details))info.message=tr('恢复副本已删除，无法再撤销这次补丁。当前系统不受影响。','The recovery copy was deleted. This patch can no longer be undone; the current system is unaffected.','Kurtarma kopyası silindi. Son yama artık geri alınamaz.');return E('div',{class:'mud-ota-error'},[
+        function uploadError(details){
+            if(!/Failed to open target file/i.test(details))return null;
+            if(/errno=28\b/.test(details))return tr('上传目标存储空间不足，请释放空间后重试。','The upload destination is full. Free space and retry.','Yükleme hedefinde yer yok. Alan açıp yeniden deneyin.');
+            if(/errno=30\b/.test(details))return tr('上传目标文件系统为只读，请检查存储状态后重试。','The upload filesystem is read-only. Check storage before retrying.','Yükleme dosya sistemi salt okunur. Depolamayı kontrol edin.');
+            if(/errno=13\b/.test(details))return tr('无法写入上传目录，请检查目录权限。','The upload directory is not writable. Check its permissions.','Yükleme dizinine yazılamıyor. İzinleri kontrol edin.');
+            return tr('无法写入上传文件。请刷新后重试；若仍失败，请保留技术详情中的错误码和目标路径。','Cannot write the upload. Refresh and retry; if it fails again, retain the error code and destination path in technical details.','Yükleme dosyasına yazılamıyor. Yenileyip deneyin; sürerse teknik ayrıntılardaki hata kodunu ve hedef yolu saklayın.');
+        }
+        function errorNode(e){var info=messages.explainError(e,!zh);var uploadMessage=uploadError(info.details);if(uploadMessage)info.message=uploadMessage;if(/Incomplete patch inspection response|Patch inspection result is/.test(info.details))info.message=tr('补丁校验结果缺失或不完整，未开始更新。请重新检查补丁。','Patch inspection is missing or incomplete. No update started. Inspect the patch again.','Yama kontrol sonucu eksik veya bozuk. Güncelleme başlamadı. Yamayı yeniden kontrol edin.');if(/Patch inspection did not return a task ticket/.test(info.details))info.message=tr('未收到校验任务编号，未开始更新。请重新检查补丁。','No inspection task ID was received. No update started. Inspect the patch again.','Kontrol görevi kimliği alınamadı. Güncelleme başlamadı. Yamayı yeniden kontrol edin.');if(/Patch inspection task state is invalid/.test(info.details))info.message=tr('补丁校验任务状态无效，未开始更新。请重新检查补丁。','The inspection task state is invalid. No update started. Inspect the patch again.','Kontrol görevi durumu geçersiz. Güncelleme başlamadı. Yamayı yeniden kontrol edin.');if(/Inspect this patch|Upload differs/.test(info.details))info.message=tr('补丁检查结果已失效或文件已变化，未开始写入。请重新导入并检查。','The review is stale or the file changed. No writes started. Import and inspect it again.','Kontrol geçersiz veya dosya değişti. Yazma başlamadı. Yeniden içe aktarıp kontrol edin.');if(/There is no item named ['"]manifest\.json['"]/.test(info.details))info.message=tr('请选择有效的 update.ota 或包含它的更新 ZIP；完整固件请使用下方的差分生成功能。','Select a valid update.ota or an update ZIP containing it. Use the generator below for full firmware ZIPs.','Geçerli update.ota veya onu içeren güncelleme ZIP dosyasını seçin.');if(/ZIP contains no OTA/.test(info.details))info.message=tr('此 ZIP 不包含 .ota；完整固件请使用下方的差分生成功能。','This ZIP has no .ota. For full firmware, use the generator below.','Bu ZIP .ota içermiyor. Tam sürüm için aşağıdaki oluşturucuyu kullanın.');if(/multiple OTA/.test(info.details))info.message=tr('ZIP 中有多个 .ota，请单独选择需要的补丁。','This ZIP contains multiple .ota files. Select the desired patch directly.','ZIP birden fazla .ota içeriyor. İstenen yamayı doğrudan seçin.');if(/Recovery copy was deleted/.test(info.details))info.message=tr('恢复副本已删除，无法再撤销这次补丁。当前系统不受影响。','The recovery copy was deleted. This patch can no longer be undone; the current system is unaffected.','Kurtarma kopyası silindi. Son yama artık geri alınamaz.');return E('div',{class:'mud-ota-error'},[
             E('p',{},info.message),E('details',{},[E('summary',{},tr('技术详情','Technical details','Teknik ayrıntılar')),E('pre',{},info.details)])]);}
         function clearNotice(){if(notice)notice.remove();notice=null;}
         function failed(e){if(!disposed){clearNotice();notice=ui.addNotification(null,errorNode(e),'error');}}
@@ -174,7 +181,7 @@ return view.extend({
             progress(r);
         }
         function stopWatch(){if(pollTick)poll.remove(pollTick);watching=false;}
-        this.stopWatch=function(){disposed=true;overlay.hidden=true;stopWatch();stopBuildWatch();if(inspectionTick)poll.remove(inspectionTick);inspectionTick=null;if(inspectionDone)inspectionDone();inspectionDone=null;clearNotice();};
+        this.stopWatch=function(){disposed=true;if(cancelFullPicker)cancelFullPicker();overlay.hidden=true;stopWatch();stopBuildWatch();if(inspectionTick)poll.remove(inspectionTick);inspectionTick=null;if(inspectionDone)inspectionDone();inspectionDone=null;clearNotice();};
         function interrupted(e){
             // rpcd reload removes and re-registers executable plugins after
             // committed updates. This is not a filesystem transaction failure.
@@ -310,22 +317,56 @@ return view.extend({
                 });
             }).catch(function(e){phase(null);detail.textContent=tr('本次补丁未导入。','This patch was not imported.','Bu yama içe aktarılmadı.');failed(e);});
         }
-        function uploadFile(path,target,file,hint,hintText){
-            if(!file)return ui.uploadFile(path,target);
-            // Same authenticated transport for all fixed upload slots. The
-            // original file name is metadata, never a destination path.
-            var data=new FormData();
-            data.append('sessionid',rpc.getSessionID());data.append('filename',path);data.append('filedata',file);
-            hint.textContent=tr('正在上传：','Uploading: ','Yükleniyor: ')+file.name;
-            return request.post(L.env.cgi_base+'/cgi-upload',data,{timeout:0,progress:function(event){
-                if(disposed)return;
-                var pct=event.total>0?' · '+Math.min(100,Math.round(event.loaded*100/event.total))+'%':'';
-                hint.textContent=tr('正在上传：','Uploading: ','Yükleniyor: ')+file.name+pct;
-            }}).then(function(response){
-                var reply=response.json();
-                if(!reply||typeof reply!=='object')throw new Error(tr('上传响应无效','Invalid upload response','Geçersiz yükleme yanıtı'));
-                if(reply.failure)throw new Error(reply.message||String(reply.failure));
-                return reply;
+        function chooseFullZip(){
+            return new Promise(function(resolve,reject){
+                var input=E('input',{type:'file',accept:'.zip',id:'ota-full-file',style:'display:block;width:100%;min-width:0'});
+                var settled=false,note=E('p',{class:'mud-note'}),confirm=action(tr('上传','Upload','Yükle'),'upload','mud-ota-primary');
+                confirm.id='ota-full-file-confirm';confirm.disabled=true;
+                function finish(file){if(settled)return;settled=true;cancelFullPicker=null;ui.hideModal();if(file)resolve(file);else reject(new Error('Upload has been cancelled'));}
+                cancelFullPicker=function(){finish(null);};
+                input.onchange=function(){
+                    var file=input.files&&input.files[0],valid=file&&/\.zip$/i.test(file.name);
+                    confirm.disabled=!valid;
+                    note.textContent=file&&!valid?tr('请选择完整固件 .zip 文件','Choose a full firmware .zip file','Tam ürün yazılımı .zip dosyasını seçin'):'';
+                };
+                confirm.onclick=function(){if(!confirm.disabled)finish(input.files[0]);};
+                var cancel=action(tr('取消','Cancel','İptal'),'history');cancel.onclick=cancelFullPicker;
+                ui.showModal(tr('选择完整固件 ZIP','Choose full firmware ZIP','Tam ürün yazılımı ZIP dosyasını seçin'),[
+                    E('div',{class:'mud mud-ota-modal'},[input,note,E('div',{class:'mud-ota-modal-actions'},[cancel,confirm])])]);
+            });
+        }
+        function uploadFile(path,target,file,hint,hintText,prepare,retried){
+            if(!file)return prepare?chooseFullZip().then(function(selected){return uploadFile(path,target,selected,hint,hintText,prepare,false);}):ui.uploadFile(path,target);
+            // A picker may stay open while an update/cleanup removes the target
+            // directory. Prepare after selection, immediately before each POST.
+            function send(){
+                if(disposed)throw new Error('Upload has been cancelled');
+                // Same authenticated transport for all fixed upload slots. The
+                // original file name is metadata, never a destination path.
+                var data=new FormData();
+                data.append('sessionid',rpc.getSessionID());data.append('filename',path);data.append('filedata',file);
+                hint.textContent=tr('正在上传：','Uploading: ','Yükleniyor: ')+file.name;
+                return request.post(L.env.cgi_base+'/cgi-upload',data,{timeout:0,progress:function(event){
+                    if(disposed)return;
+                    var pct=event.total>0?' · '+Math.min(100,Math.round(event.loaded*100/event.total))+'%':'';
+                    hint.textContent=tr('正在上传：','Uploading: ','Yükleniyor: ')+file.name+pct;
+                }}).then(function(response){
+                    var reply=response.json();
+                    if(!reply||typeof reply!=='object')throw new Error(tr('上传响应无效','Invalid upload response','Geçersiz yükleme yanıtı'));
+                    if(reply.failure){
+                        var failure=new Error((reply.message||String(reply.failure))+' (errno='+reply.failure+'; target='+path+')');
+                        failure.uploadErrno=Number(reply.failure);throw failure;
+                    }
+                    return reply;
+                });
+            }
+            return (prepare?prepare().then(send):send()).catch(function(e){
+                // cgi-io opens the final target after receiving the data. A
+                // directory removed during transfer is recoverable once; keep
+                // the selected File, recreate through the same backend, retry.
+                if(prepare&&!retried&&!disposed&&e.uploadErrno===2&&/Failed to open target file/i.test(e.message))
+                    return uploadFile(path,target,file,hint,hintText,prepare,true);
+                throw e;
             }).finally(function(){if(!disposed)hint.textContent=hintText;});
         }
         function bindDrop(target,pattern,typeMessage,accept){
@@ -552,15 +593,11 @@ return view.extend({
             if(disposed||target.disabled||busy||buildBusy||rebooting||!L.hasViewPermission())return Promise.resolve();
             if(target===oldUpload&&buildMode.value!=='pair'||target===currentUpload&&baselinePanel.hidden)return Promise.resolve();
             clearNotice();activeUpload=target;buildBusy=true;controls();
-            // The status handler also creates the fixed upload directory.
-            // Do not rely on an earlier page load: an upgrade or cleanup may
-            // have removed it while this page remained open. CGI upload does
-            // not create parent directories, and backend errors must stop here.
-            return callBuildStatus().then(function(r){
-                if(disposed)return;
-                if((r.job||{}).status==='running')
-                    throw new Error(tr('生成任务正在运行，请等待完成后再上传。','Generation is running. Wait until it finishes before uploading.','Oluşturma sürüyor. Yüklemeden önce tamamlanmasını bekleyin.'));
-                return uploadFile('/etc/unisoc-ota/builder/'+name,target,file,hint,zipHintText);
+            return uploadFile('/etc/unisoc-ota/builder/'+name,target,file,hint,zipHintText,function(){
+                return callBuildStatus().then(function(r){
+                    if((r.job||{}).status==='running')
+                        throw new Error(tr('生成任务正在运行，请等待完成后再上传。','Generation is running. Wait until it finishes before uploading.','Oluşturma sürüyor. Yüklemeden önce tamamlanmasını bekleyin.'));
+                });
             }).then(function(){
                 if(disposed)return;
                 return callBuildStatus();
