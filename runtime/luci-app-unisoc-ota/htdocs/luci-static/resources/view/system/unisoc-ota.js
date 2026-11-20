@@ -59,18 +59,25 @@ var CSS = `
 .mud-ota-spinner{display:inline-block;width:30px;height:30px;box-sizing:border-box;border:3px solid var(--hairline,#ddd);border-top-color:var(--brand,var(--primary,#2f7bf6));border-radius:50%;animation:mud-ota-spin .8s linear infinite}
 .mud-ota .mud-btn[aria-busy=true]::after{content:'';width:13px;height:13px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:mud-ota-spin .8s linear infinite}
 @keyframes mud-ota-spin{to{transform:rotate(360deg)}}
-.mud-ota [hidden]{display:none!important}
+.mud-ota [hidden]{display:none!important}.mud-ota-modal [hidden]{display:none!important}
 .mud-ota-baseline-setup{margin:12px 0;padding:12px;border:1px solid var(--hairline,var(--border,#e3e6ea));border-radius:var(--radius-base,.5rem)}.mud-ota-baseline-title{font-size:.83rem;font-weight:600;color:var(--brand,var(--primary,#2f7bf6))}.mud-ota-baseline-setup .mud-note{margin:10px 0}
 .mud-ota-build-progress{margin-top:12px}.mud-ota-build-progress-label{display:flex;align-items:center;gap:10px;font-size:.84rem}.mud-ota-build-progress .mud-ota-spinner{width:16px;height:16px;border-width:2px;flex-shrink:0}.mud-ota-build-track{height:5px;margin-top:10px;overflow:hidden;border-radius:4px;background:var(--hairline,#ddd)}.mud-ota-build-fill{height:100%;background:var(--brand,var(--primary,#2f7bf6));transition:width .2s}.mud-ota-build-track[data-indeterminate=true] .mud-ota-build-fill{width:35%;animation:mud-ota-sweep 1.5s ease-in-out infinite}
 @keyframes mud-ota-sweep{from{transform:translateX(-110%)}to{transform:translateX(300%)}}
 @media(prefers-reduced-motion:reduce){.mud-ota-spinner,.mud-ota .mud-btn[aria-busy=true]::after{animation-duration:2s}.mud-ota-build-track[data-indeterminate=true] .mud-ota-build-fill{animation:none;width:100%;opacity:.4}.mud-ota-build-fill{transition:none}}
 .mud-ota-modal-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;margin-top:22px}.mud-ota-error pre{max-height:180px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+.mud-ota-file-picker{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:16px;border:1px solid var(--hairline,var(--border,#dce1e6));border-radius:10px;background:var(--surface-sunken,rgba(127,127,127,.04))}
+.mud-ota-modal .mud-ota-file-select{display:inline-flex;align-items:center;justify-content:center;gap:9px;flex:none;min-height:44px;padding:10px 16px;border:1px solid var(--brand,#00958e);border-radius:8px;background:var(--brand,#00958e);color:var(--on-brand,#fff);font-size:.875rem;font-weight:600;line-height:1.4;cursor:pointer}
+.mud-ota-modal .mud-ota-file-select:not(:disabled):hover{filter:brightness(1.1)}.mud-ota-file-select:focus-visible{outline:2px solid var(--brand,#00958e);outline-offset:3px}
+.mud-ota-modal .mud-btn .mud-ota-icon{width:18px;height:18px;background:none;color:inherit}.mud-ota-modal .mud-btn .mud-ota-icon svg{width:18px;height:18px}
+.mud-ota-file-description{flex:1;min-width:0;overflow-wrap:anywhere}.mud-ota-file-name{display:block;color:var(--text,var(--text-color-high,#222));font-size:.875rem;line-height:1.5}.mud-ota-file-types{display:block;margin-top:3px;color:var(--text-muted,var(--text-light,#777));font-size:.75rem;line-height:1.5}
+@media(max-width:480px){.mud-ota-file-description{flex-basis:100%}}
 .mud-ota-builder{margin-bottom:18px}.mud-ota-build-fields{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:16px 0}.mud-ota-build-fields select{max-width:100%;min-height:38px}.mud-ota-build-fields label{font-size:.85rem}.mud-ota-build-upload{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.mud-ota-build-upload code{overflow-wrap:anywhere;font-size:.8rem}.mud-ota-build-status{margin-top:16px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:.84rem}.mud-ota-build-baseline{margin:10px 0;line-height:1.6}
 @media(max-width:720px){.mud-ota-grid{grid-template-columns:1fr}.mud-ota .mud-card{padding:18px}.mud-ota-hero{align-items:flex-start;flex-wrap:wrap}.mud-ota-hero>.mud-btn{margin-top:0}.mud-ota .mud-ota-heading h2{font-size:1.3rem}}
 `;
 
 function icon(kind) {
     var paths={upload:'<path d="M12 16V3m-5 5 5-5 5 5M4 16v5h16v-5"/>',
+        folder:'<path d="M3 7V5h6l2 2h10v13H3V7Z"/>',
         recovery:'<path d="M3 11a9 9 0 1 1 2.5 7M3 4v7h7M12 7v5l3 2"/>',
         power:'<path d="M12 3v8M6 5a9 9 0 1 0 12 0"/>',
         history:'<path d="M4 6h16M4 12h10M4 18h7"/>',
@@ -321,20 +328,26 @@ return view.extend({
         }
         function chooseUpload(patch){
             return new Promise(function(resolve,reject){
-                var input=E('input',{type:'file',accept:patch?'.ota,.zip':'.zip',id:'ota-full-file',style:'display:block;width:100%;min-width:0'});
+                var input=E('input',{type:'file',accept:patch?'.ota,.zip':'.zip',id:'ota-full-file',hidden:true});
+                var emptyName=tr('未选择文件','No file selected','Dosya seçilmedi');
+                var fileName=E('span',{id:'ota-full-file-name',class:'mud-ota-file-name',role:'status','aria-live':'polite'},emptyName);
+                var select=action(tr('选择文件','Choose file','Dosya seç'),'folder','mud-ota-file-select');
+                select.id='ota-full-file-select';select.setAttribute('aria-controls','ota-full-file');
+                select.onclick=function(){input.click();};
                 var settled=false,note=E('p',{class:'mud-note'}),confirm=action(tr('上传','Upload','Yükle'),'upload','mud-ota-primary');
                 confirm.id='ota-full-file-confirm';confirm.disabled=true;
                 function finish(file){if(settled)return;settled=true;cancelFullPicker=null;ui.hideModal();if(file)resolve(file);else reject(new Error('Upload has been cancelled'));}
                 cancelFullPicker=function(){finish(null);};
                 input.onchange=function(){
                     var file=input.files&&input.files[0],valid=file&&(patch?/\.(ota|zip)$/i:/\.zip$/i).test(file.name);
+                    fileName.textContent=file?file.name:emptyName;
                     confirm.disabled=!valid||!L.hasViewPermission();
                     note.textContent=file&&!valid?(patch?tr('请选择 .ota 或包含补丁的 .zip 文件','Choose an .ota file or a .zip containing a patch','Bir .ota dosyası veya yama içeren .zip seçin'):tr('请选择完整固件 .zip 文件','Choose a full firmware .zip file','Tam ürün yazılımı .zip dosyasını seçin')):'';
                 };
                 confirm.onclick=function(){if(!confirm.disabled&&L.hasViewPermission())finish(input.files[0]);};
-                var cancel=action(tr('取消','Cancel','İptal'),'history');cancel.disabled=false;cancel.onclick=cancelFullPicker;
+                var cancel=action(tr('取消','Cancel','İptal'),'history');cancel.id='ota-full-file-cancel';cancel.disabled=false;cancel.onclick=cancelFullPicker;
                 ui.showModal(patch?tr('选择系统补丁','Choose system patch','Sistem yamasını seçin'):tr('选择完整固件 ZIP','Choose full firmware ZIP','Tam ürün yazılımı ZIP dosyasını seçin'),[
-                    E('div',{class:'mud mud-ota-modal'},[input,note,E('div',{class:'mud-ota-modal-actions'},[cancel,confirm])])]);
+                    E('div',{class:'mud mud-ota-modal'},[input,E('div',{class:'mud-ota-file-picker'},[select,E('div',{class:'mud-ota-file-description'},[fileName,E('small',{class:'mud-ota-file-types'},patch?tr('支持 .ota 或 .zip','Supports .ota or .zip','.ota veya .zip desteklenir'):tr('完整固件 .zip','Full firmware .zip','Tam ürün yazılımı .zip'))])]),note,E('div',{class:'mud-ota-modal-actions'},[cancel,confirm])])]);
             });
         }
         function uploadFile(path,target,file,hint,hintText,prepare,retried){

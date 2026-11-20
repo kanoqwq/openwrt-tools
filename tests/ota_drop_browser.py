@@ -86,17 +86,26 @@ def main():
                     assert not zone.is_disabled()
                 # Click/keyboard select first, then prepare and upload the fixed patch slot.
                 setup();zone=page.locator('#ota-patch-upload');zone.focus();page.keyboard.press('Enter')
-                page.wait_for_selector('#ota-full-file')
+                page.wait_for_selector('#ota-full-file-select')
                 assert page.evaluate('uploads.length')==0
-                page.locator('#ota-full-file').set_input_files(dict(name='patch.ota',mimeType='application/octet-stream',buffer=b'fixture'))
+                select=page.locator('#ota-full-file-select')
+                assert select.is_visible() and select.is_enabled()
+                assert select.bounding_box()['height']>=44
+                assert select.evaluate('e=>getComputedStyle(e).backgroundColor') not in ('transparent','rgba(0, 0, 0, 0)')
+                assert page.locator('#ota-full-file').is_hidden()
+                page.bring_to_front()
+                with page.expect_file_chooser() as chooser:
+                    select.press('Enter')
+                chooser.value.set_files(dict(name='patch.ota',mimeType='application/octet-stream',buffer=b'fixture'))
+                assert page.locator('#ota-full-file-name').inner_text()=='patch.ota'
                 page.locator('#ota-full-file-confirm').click()
                 page.wait_for_function('uploads.length===1')
                 assert page.evaluate("calls.some(x=>x[0]==='status')")
                 page.evaluate('finishUpload()');page.wait_for_selector('#modal')
                 assert not page.evaluate("calls.some(x=>x[0]==='start')")
                 setup();page.locator('#ota-patch-upload').click()
-                assert page.locator('#modal button').first.is_enabled(),'Cancel must not inherit disabled="false"'
-                page.locator('#modal button').first.click()
+                assert page.locator('#ota-full-file-cancel').is_enabled(),'Cancel must not inherit disabled="false"'
+                page.locator('#ota-full-file-cancel').click()
                 page.wait_for_function('!document.querySelector("#ota-patch-upload").disabled')
                 assert page.locator('[role="alert"]').count()==0
                 # Every click-based upload slot shares the same picker. Check
@@ -108,8 +117,9 @@ def main():
                     target=page.locator('#'+id)
                     for repeat in range(2):
                         target.click()
-                        cancel=page.locator('#modal button').first
+                        cancel=page.locator('#ota-full-file-cancel')
                         confirm=page.locator('#ota-full-file-confirm')
+                        assert page.locator('#ota-full-file-select').is_visible()
                         assert cancel.is_enabled() and cancel.get_attribute('disabled') is None,(lang,width,id)
                         assert confirm.is_disabled()
                         invalid='wrong.txt' if id=='ota-patch-upload' else 'wrong.ota'
@@ -117,7 +127,13 @@ def main():
                         assert confirm.is_disabled()
                         valid='update.ota' if id=='ota-patch-upload' else 'full.ZIP'
                         page.locator('#ota-full-file').set_input_files(dict(name=valid,mimeType='application/octet-stream',buffer=b'fixture'))
+                        assert page.locator('#ota-full-file-name').inner_text()==valid
                         assert confirm.is_enabled() and confirm.get_attribute('disabled') is None
+                        long_name='OpenWrt-'+('long-file-name-'*12)+'.zip'
+                        page.locator('#ota-full-file').set_input_files(dict(name=long_name,mimeType='application/zip',buffer=b'fixture'))
+                        assert page.locator('#ota-full-file-name').inner_text()==long_name
+                        assert page.locator('#ota-full-file-name').evaluate('e=>e.scrollWidth<=e.clientWidth+1')
+                        assert confirm.is_enabled()
                         cancel.click()
                         page.wait_for_function('!document.querySelector("#modal")')
                         assert target.is_enabled()
@@ -126,8 +142,8 @@ def main():
                     page.evaluate('fixtureWritable=false')
                     page.locator('#ota-full-file').set_input_files(dict(name='full.zip',mimeType='application/octet-stream',buffer=b'fixture'))
                     assert page.locator('#ota-full-file-confirm').is_disabled()
-                    assert page.locator('#modal button').first.is_enabled()
-                    page.locator('#modal button').first.click()
+                    assert page.locator('#ota-full-file-cancel').is_enabled()
+                    page.locator('#ota-full-file-cancel').click()
                     page.wait_for_function('!document.querySelector("#modal")')
                     assert page.evaluate('uploads.length')==0
                 for write,running in ((False,False),(True,True)):
@@ -226,13 +242,13 @@ def main():
                 assert page.evaluate('builder.has_output')
                 assert not page.evaluate("calls.some(x=>x[0]==='discard_generated')")
                 setup();page.evaluate('seedGenerated()');page.locator('#ota-new-upload').click()
-                page.wait_for_selector('#ota-full-file');page.locator('#modal button').first.click()
+                page.wait_for_selector('#ota-full-file-select');page.locator('#ota-full-file-cancel').click()
                 page.wait_for_function('!document.querySelector("#ota-new-upload").disabled')
                 assert page.evaluate('builder.has_output')
                 assert not page.evaluate("calls.some(x=>x[0]==='discard_generated')")
                 # Click-to-upload still targets the corresponding builder slot.
                 setup();page.locator('#ota-current-upload').click()
-                page.wait_for_selector('#ota-full-file')
+                page.wait_for_selector('#ota-full-file-select')
                 assert not page.evaluate("calls.some(x=>x[0]==='build_status')"),'preparation must wait for selection'
                 page.locator('#ota-full-file').set_input_files(dict(name='baseline.zip',mimeType='application/zip',buffer=b'PK fixture'))
                 page.locator('#ota-full-file-confirm').click()
@@ -242,12 +258,12 @@ def main():
                 page.wait_for_function('!document.querySelector("#ota-current-upload").disabled')
                 # Cancel and unload release the picker without uploading/errors.
                 setup();page.locator('#ota-current-upload').click()
-                page.wait_for_selector('#ota-full-file');page.locator('#modal button').first.click()
+                page.wait_for_selector('#ota-full-file-select');page.locator('#ota-full-file-cancel').click()
                 page.wait_for_function('!document.querySelector("#ota-current-upload").disabled')
                 assert page.evaluate('uploads.length')==0
                 assert page.locator('[role="alert"]').count()==0
                 setup();page.locator('#ota-current-upload').click()
-                page.wait_for_selector('#ota-full-file');page.evaluate('otaView.unload()')
+                page.wait_for_selector('#ota-full-file-select');page.evaluate('otaView.unload()')
                 page.wait_for_timeout(25);assert page.evaluate('uploads.length')==0
                 assert page.locator('#modal').count()==0
                 # A job starting during file selection still blocks the upload.
