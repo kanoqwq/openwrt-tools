@@ -6,7 +6,8 @@ const path = require('node:path');
 const ts = require('../ui/node_modules/typescript');
 
 const booleans = new Set(('disabled checked selected hidden readonly multiple required autofocus ' +
-    'controls autoplay loop muted open reversed novalidate formnovalidate allowfullscreen inert').split(' '));
+    'controls autoplay loop muted open reversed novalidate formnovalidate allowfullscreen inert ' +
+    'async defer default ismap itemscope nomodule playsinline').split(' '));
 
 function mayDisableByMistake(node) {
     if (ts.isParenthesizedExpression(node)) return mayDisableByMistake(node.expression);
@@ -31,12 +32,12 @@ function inspect(source, filename) {
             const factory = node.expression.getText(ast);
             if (['E', 'dom.create', 'L.dom.create'].includes(factory) && node.arguments[1] && ts.isObjectLiteralExpression(node.arguments[1])) {
                 for (const prop of node.arguments[1].properties) {
-                    if (ts.isPropertyAssignment(prop) && booleans.has(prop.name.text) && mayDisableByMistake(prop.initializer))
+                    if (ts.isPropertyAssignment(prop) && booleans.has(String(prop.name.text).toLowerCase()) && mayDisableByMistake(prop.initializer))
                         report(prop, prop.name.text + ' may serialize a false boolean; omit it with null');
                 }
             }
             if (ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'setAttribute' &&
-                booleans.has(node.arguments[0]?.text) && node.arguments[1] && mayDisableByMistake(node.arguments[1]))
+                booleans.has(String(node.arguments[0]?.text).toLowerCase()) && node.arguments[1] && mayDisableByMistake(node.arguments[1]))
                 report(node, 'use the DOM boolean property or removeAttribute() instead');
         }
         ts.forEachChild(node, visit);
@@ -50,6 +51,7 @@ assert.equal(inspect(`E('button', {'disabled': false});`, 'bad.js').length, 1);
 assert.equal(inspect(`E('input', {checked:\n !!enabled});`, 'bad.js').length, 1);
 assert.equal(inspect(`E('option', {selected: flag ? true : false});`, 'bad.js').length, 1);
 assert.equal(inspect(`E('div', {hidden: 'false'});`, 'bad.js').length, 1);
+assert.equal(inspect(`E('input', {readOnly: false});`, 'bad.js').length, 1);
 assert.equal(inspect(`dom.create('button', {disabled: !writable});`, 'bad.js').length, 1);
 assert.equal(inspect(`node.setAttribute('disabled', false);`, 'bad.js').length, 1);
 assert.deepEqual(inspect(`
