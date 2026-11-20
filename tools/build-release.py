@@ -45,7 +45,6 @@ def resume_firmware(args):
         try:
             api['input_check'](common,rows)
             before=identify(repo,'e5','6.18.54')
-            if before['source_dirty']:raise ValueError('Firmware checkout must be clean before resuming')
             assets=[]; version=None; found=set()
             for path in sorted(pending.glob('*.zip')):
                 if path.is_symlink():raise ValueError('Symlink archive is not an owned output')
@@ -56,7 +55,7 @@ def resume_firmware(args):
                 if profile not in rows or profile in found:
                     raise ValueError('Archive is not a unique selected model: '+profile)
                 if (record['source_commit']!=before['source_commit'] or record['source_fingerprint']!=before['source_fingerprint'] or
-                        record.get('source_dirty') is not False or path.name!=record['package_name']+'.zip'):
+                        record.get('source_dirty') is not before['source_dirty'] or path.name!=record['package_name']+'.zip'):
                     raise ValueError('Firmware source changed since this archive was built: '+profile)
                 if version is not None and version!=record['private_version']:raise ValueError('Mixed pending release versions')
                 version=record['private_version']

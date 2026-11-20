@@ -49,7 +49,7 @@ class Resume(unittest.TestCase):
 
     def archive(self,profile):
         path=self.pending/(profile+'-release.zip')
-        record=dict(profile=profile,source_commit='a'*40,source_fingerprint='same',source_dirty=False,
+        record=dict(profile=profile,source_commit='a'*40,source_fingerprint='same',source_dirty=self.source['source_dirty'],
                     private_version='old-version',package_name=profile+'-release')
         with zipfile.ZipFile(path,'w') as z:
             z.writestr('files/RELEASE.json',json.dumps(record))
@@ -71,6 +71,28 @@ class Resume(unittest.TestCase):
         self.source['source_fingerprint']='changed'
         with self.assertRaisesRegex(ValueError,'source changed'):tool.resume_firmware(self.args)
         self.assertFalse(self.builds);self.assertEqual((self.pending/'e5-release.zip').read_bytes(),self.original)
+
+    def test_unchanged_dirty_snapshot_resumes_without_replacing_existing_archive(self):
+        self.source['source_dirty']=True
+        self.archive('e5')
+        original=(self.pending/'e5-release.zip').read_bytes()
+        tool.resume_firmware(self.args)
+        final=self.pending.with_name('old-task')
+        self.assertEqual(self.builds,['changxing60-package'])
+        self.assertEqual((final/'e5-release.zip').read_bytes(),original)
+        self.assertIs(json.loads((final/'BUILD-RUN.json').read_text())['source']['source_dirty'],True)
+
+    def test_dirty_flag_change_rejects_even_a_matching_fingerprint(self):
+        self.source['source_dirty']=True
+        with self.assertRaisesRegex(ValueError,'source changed'):tool.resume_firmware(self.args)
+        self.assertFalse(self.builds)
+
+    def test_modified_dirty_snapshot_is_rejected(self):
+        self.source['source_dirty']=True
+        self.archive('e5')
+        self.source['source_fingerprint']='changed'
+        with self.assertRaisesRegex(ValueError,'source changed'):tool.resume_firmware(self.args)
+        self.assertFalse(self.builds)
 
     def test_verified_archive_survives_a_lost_completion_checkpoint(self):
         self.archive('changxing60')
