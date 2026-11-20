@@ -26,3 +26,28 @@ LuCI DOM.attr 实现：除 null/undefined 外，它会调用 setAttribute。
 命令：`python tests/ota_drop_browser.py`、`node tests/ota_luci.js`。
 两项均通过；没有进行设备热部署。固件及独立安装器重新打包前应使用匹配的
 新源码产物，旧 ZIP 不会因源码修复而自动变化。
+
+## 布尔属性扩大检查
+
+随后检查 E5、MU300、Pro 的 `openwrt/`、`devices/`、共享 `installer/runtime/`
+及独立 SIP 插件，共 155 份自有运行时 JS；不包括第三方 vendor、构建输出或测试夹具。
+同时检查原始 HTML、setAttribute 调用、传入变量的属性集合和控件封装。
+新增发现为三仓库旧 `openwrt/luci-app-unisoc-ota/` 副本中相同的按钮工厂，
+均已改为 `!L.hasViewPermission() || null`。当前完整包入口使用共享
+`installer/stage-ota.py`；旧 Makefile 仍能复制旧副本，不能留着错误写法。
+
+未发现其他同类原始 HTML 布尔属性错误。SIP 的 button/input 封装已有
+false 属性过滤；Dropdown 的 multiple 选项、RPC 数据、ARIA 字符串及
+`node.disabled = false` 等 DOM 属性赋值不适用 LuCI E() 的序列化规则。
+没有替换这些正常写法，没有改全局 LuCI DOM 实现。
+
+新增静态回归（使用 ui 已有 TypeScript 开发依赖）：
+
+```powershell
+node tests/luci_boolean_attributes.js D:/Git/e5-linux D:/Git/u30pro_openwrt D:/Git/mu300-linux-clean-tf-7.2 D:/Git/e5-sip-gateway
+```
+
+修复前准确报告上述三处，修复后 155 份源码通过。检查覆盖 E/dom.create 的
+直接属性对象、原生 setAttribute、引号键名、跨行属性与条件分支，并用反例
+保护 DOM 属性赋值、ARIA、Dropdown 选项及 SIP 封装。它不是完整的数据流分析，
+变量属性集合和新控件封装仍需代码审查。
