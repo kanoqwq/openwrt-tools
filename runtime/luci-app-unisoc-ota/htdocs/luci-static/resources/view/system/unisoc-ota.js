@@ -95,7 +95,9 @@ return view.extend({
         var detail=E('div',{class:'mud-ota-activity',role:'status','aria-live':'polite'});
         var version=E('code'), badge=E('span',{class:'mud-ota-status'});
         var size=E('strong',{},'--'), recoveryNote=E('p',{class:'mud-note'});
-        function action(label,kind,cls){return E('button',{type:'button',class:'mud-btn '+(cls||''),'aria-label':label,disabled:!L.hasViewPermission()},[icon(kind),label]);}
+        // LuCI serializes boolean attributes by presence: disabled=false still
+        // disables the HTML button. Omit it entirely when writing is allowed.
+        function action(label,kind,cls){return E('button',{type:'button',class:'mud-btn '+(cls||''),'aria-label':label,disabled:!L.hasViewPermission()||null},[icon(kind),label]);}
         var button=action(tr('导入差异包','Import patch','Yama içe aktar'),'upload','mud-ota-dropzone');
         button.setAttribute('id','ota-patch-upload');
         var uploadHintText=tr('拖拽文件到此处，或点击选择上传','Drop a file here, or click to select and upload','Dosyayı buraya bırakın veya seçip yüklemek için tıklayın');
@@ -326,11 +328,11 @@ return view.extend({
                 cancelFullPicker=function(){finish(null);};
                 input.onchange=function(){
                     var file=input.files&&input.files[0],valid=file&&(patch?/\.(ota|zip)$/i:/\.zip$/i).test(file.name);
-                    confirm.disabled=!valid;
+                    confirm.disabled=!valid||!L.hasViewPermission();
                     note.textContent=file&&!valid?(patch?tr('请选择 .ota 或包含补丁的 .zip 文件','Choose an .ota file or a .zip containing a patch','Bir .ota dosyası veya yama içeren .zip seçin'):tr('请选择完整固件 .zip 文件','Choose a full firmware .zip file','Tam ürün yazılımı .zip dosyasını seçin')):'';
                 };
-                confirm.onclick=function(){if(!confirm.disabled)finish(input.files[0]);};
-                var cancel=action(tr('取消','Cancel','İptal'),'history');cancel.onclick=cancelFullPicker;
+                confirm.onclick=function(){if(!confirm.disabled&&L.hasViewPermission())finish(input.files[0]);};
+                var cancel=action(tr('取消','Cancel','İptal'),'history');cancel.disabled=false;cancel.onclick=cancelFullPicker;
                 ui.showModal(patch?tr('选择系统补丁','Choose system patch','Sistem yamasını seçin'):tr('选择完整固件 ZIP','Choose full firmware ZIP','Tam ürün yazılımı ZIP dosyasını seçin'),[
                     E('div',{class:'mud mud-ota-modal'},[input,note,E('div',{class:'mud-ota-modal-actions'},[cancel,confirm])])]);
             });

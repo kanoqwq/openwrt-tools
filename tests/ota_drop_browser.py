@@ -14,7 +14,8 @@ FIXTURE = r'''async ([source,errors,lang,writable,running,baselineReady])=>{
  document.body.style.cssText='margin:16px;background:#05070e;color:#f9fafb;font-family:system-ui,sans-serif';
  window.calls=[];window.uploads=[];window.pickers=[];window.failUpload=false;window.buildStatusError=false;window.blockPreflight=false;
  window.builder={job:{status:'idle'},baseline:{available:!!baselineReady},uploads:{}};
- function E(tag,attrs={},children=[]){const e=document.createElement(tag);for(const [k,v] of Object.entries(attrs)){if(v==null)continue;if(k==='click')e.addEventListener(k,v);else if(k==='hidden'||k==='disabled')e[k]=v;else e.setAttribute(k,v);}for(const c of Array.isArray(children)?children:[children])if(c!=null)e.append(c instanceof Node?c:document.createTextNode(String(c)));return e;}
+ // Match LuCI DOM.attr(): false is still an HTML attribute, not a property assignment.
+ function E(tag,attrs={},children=[]){const e=document.createElement(tag);for(const [k,v] of Object.entries(attrs)){if(v==null)continue;if(k==='click')e.addEventListener(k,v);else e.setAttribute(k,v);}for(const c of Array.isArray(children)?children:[children])if(c!=null)e.append(c instanceof Node?c:document.createTextNode(String(c)));return e;}
  const state={identity:{version:'test-r1'},job:{status:running?'running':'idle'},recovery:{count:0,pending:false}};
  const rpc={getSessionID:()=>'fixture-session',declare:o=>(...args)=>{
    calls.push([o.method,args]);
@@ -31,7 +32,8 @@ FIXTURE = r'''async ([source,errors,lang,writable,running,baselineReady])=>{
    return new Promise((resolve,reject)=>{window.finishUpload=(reply)=>{if(!failUpload&&!reply?.failure&&data.get('filename').includes('/builder/'))builder.uploads[data.get('filename').split('/').at(-1)]=100;resolve({json:()=>reply||(failUpload?{failure:2,message:'Fixture upload rejected'}:{size:100})});};window.rejectUpload=reject;});
  }};
  const messages=await import('data:text/javascript;base64,'+btoa(unescape(encodeURIComponent(errors))));
- const L={env:{cgi_base:'/custom/cgi'},hasViewPermission:()=>writable};
+ window.fixtureWritable=writable;
+ const L={env:{cgi_base:'/custom/cgi'},hasViewPermission:()=>window.fixtureWritable};
  const M={injectCss(){const s=E('style',{},'.mud-card{border:1px solid var(--hairline);border-radius:12px}.mud-btn{border:1px solid var(--hairline);border-radius:8px;color:inherit}.mud-btn:disabled{opacity:.5}');document.head.append(s);},localizeMenu(){},uiLanguage:()=>lang};
  window.otaView=new Function('view','rpc','ui','request','poll','E','document','L','M',source)({extend:o=>o},rpc,ui,request,{add(){},remove(){}},E,document,L,M);
  document.body.append(otaView.render([messages,state,builder]));
@@ -93,9 +95,41 @@ def main():
                 page.evaluate('finishUpload()');page.wait_for_selector('#modal')
                 assert not page.evaluate("calls.some(x=>x[0]==='start')")
                 setup();page.locator('#ota-patch-upload').click()
+                assert page.locator('#modal button').first.is_enabled(),'Cancel must not inherit disabled="false"'
                 page.locator('#modal button').first.click()
                 page.wait_for_function('!document.querySelector("#ota-patch-upload").disabled')
                 assert page.locator('[role="alert"]').count()==0
+                # Every click-based upload slot shares the same picker. Check
+                # real HTML boolean attributes, cancellation/reopening, file
+                # validation and permission loss while the modal is open.
+                for id in ('ota-patch-upload','ota-current-upload','ota-new-upload','ota-old-upload'):
+                    setup()
+                    if id=='ota-old-upload':page.locator('#ota-build-mode').select_option('pair')
+                    target=page.locator('#'+id)
+                    for repeat in range(2):
+                        target.click()
+                        cancel=page.locator('#modal button').first
+                        confirm=page.locator('#ota-full-file-confirm')
+                        assert cancel.is_enabled() and cancel.get_attribute('disabled') is None,(lang,width,id)
+                        assert confirm.is_disabled()
+                        invalid='wrong.txt' if id=='ota-patch-upload' else 'wrong.ota'
+                        page.locator('#ota-full-file').set_input_files(dict(name=invalid,mimeType='application/octet-stream',buffer=b'bad'))
+                        assert confirm.is_disabled()
+                        valid='update.ota' if id=='ota-patch-upload' else 'full.ZIP'
+                        page.locator('#ota-full-file').set_input_files(dict(name=valid,mimeType='application/octet-stream',buffer=b'fixture'))
+                        assert confirm.is_enabled() and confirm.get_attribute('disabled') is None
+                        cancel.click()
+                        page.wait_for_function('!document.querySelector("#modal")')
+                        assert target.is_enabled()
+                        assert page.evaluate('uploads.length')==0
+                    target.click()
+                    page.evaluate('fixtureWritable=false')
+                    page.locator('#ota-full-file').set_input_files(dict(name='full.zip',mimeType='application/octet-stream',buffer=b'fixture'))
+                    assert page.locator('#ota-full-file-confirm').is_disabled()
+                    assert page.locator('#modal button').first.is_enabled()
+                    page.locator('#modal button').first.click()
+                    page.wait_for_function('!document.querySelector("#modal")')
+                    assert page.evaluate('uploads.length')==0
                 for write,running in ((False,False),(True,True)):
                     setup(write,running);page.evaluate("drop(['update.ota'])")
                     assert page.evaluate('uploads.length')==0
