@@ -106,7 +106,20 @@ def package_replacements(installed, target, removed):
     User-added packages are never candidates for automatic removal.
     """
     replaced = set()
+    native = target.get('kernel', '')
+    native_origin = '\no:unisoc-native-kernel\n' in '\n'+native+'\n'
+    old_kernel = next((s[2:] for s in installed.get('kernel', '').splitlines()
+                       if s.startswith('V:')), None)
     for name in removed & installed.keys():
+        # Native images package built-ins and matching .ko together. Retire
+        # only clean-base kmod records tied to the previous kernel, never a
+        # user-added module or a similarly named userspace package. The new
+        # provider need not claim a capability the native kernel does not have.
+        if native_origin and name.startswith('kmod-') and old_kernel:
+            deps = next((s[2:].split() for s in installed[name].splitlines() if s.startswith('D:')), [])
+            if 'kernel='+old_kernel in deps:
+                replaced.add(name)
+                continue
         owned = package_paths(installed[name])
         for record in target.values():
             provided = next((s[2:].split() for s in record.splitlines() if s.startswith('p:')), [])
@@ -521,7 +534,18 @@ class Engine:
                 target_records = package_records(patch.archive.read('blobs/'+op['after']['sha256']))
                 break
         shadowed = shadowed_dnsmasq(installed, target_records)
-        extra_packages = set(installed)-set(m.get('base_packages', {}))-shadowed
+        # A kernel capability newly included in the image must use its
+        # matching native record/module even if an older kmod of that name
+        # was installed by the user. Unrelated plugin versions still stay.
+        native_capabilities = set()
+        native_kernel = target_records.get('kernel', '')
+        if '\no:unisoc-native-kernel\n' in '\n'+native_kernel+'\n':
+            version = next((s[2:] for s in native_kernel.splitlines() if s.startswith('V:')), '')
+            for name, row in target_records.items():
+                if (name.startswith('kmod-') and '\no:unisoc-native-kernel\n' in '\n'+row+'\n'
+                        and '\nD:kernel='+version+'\n' in '\n'+row+'\n'):
+                    native_capabilities.add(name)
+        extra_packages = set(installed)-set(m.get('base_packages', {}))-shadowed-native_capabilities
         replaced = package_replacements(installed, target_records, removed_base) | shadowed
         retained = extra_packages | (removed_base - replaced)
         owned = set()
@@ -559,7 +583,7 @@ class Engine:
                     for line in new.decode().splitlines():
                         key = line.split(separator, 1)[0] if separator else re.split(r'[<>=~]', line, 1)[0]
                         if key not in keys: lines.append(line); keys.add(key)
-                        elif merge == 'world' and key in m.get('base_packages', {}):
+                        elif merge == 'world' and (key in m.get('base_packages', {}) or key in native_capabilities):
                             lines = [line if re.split(r'[<>=~]', old, 1)[0] == key else old for old in lines]
                     new = ('\n'.join(lines)+'\n').encode()
                 after = dict(after, size=len(new), sha256=hashlib.sha256(new).hexdigest())
