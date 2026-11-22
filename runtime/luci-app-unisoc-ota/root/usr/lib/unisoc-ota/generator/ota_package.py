@@ -316,6 +316,14 @@ def compare(old, new):
     # binary and database row. Use existing runtime blobs so an old inspector
     # can still validate the patch before handing it to the new RAM applier.
     if busybox and 'usr/bin/python3' in runtime:
+        # Retain the target's complete package state even if it is unchanged
+        # between clean releases. The RAM applier merges live user additions
+        # and can finish metadata migration left by an older generator.
+        for name, key in (('lib/apk/db/installed', 'ota/package-db'),
+                          ('etc/apk/world', 'ota/package-world')):
+            desc = new.entries.get(name)
+            if desc and desc['kind'] == 'file':
+                runtime[key] = desc
         changed = {name for name,value in new.packages.items() if old.packages.get(name) != value}
         for name, record in package_records(new.package_db).items():
             if name not in changed:

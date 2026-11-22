@@ -119,14 +119,33 @@ def package_replacements(installed, target, removed):
 
 def retired_kernel_records(installed, target):
     """Remove only our withdrawn generated capability records, never drivers."""
-    previous, incoming = installed.get('kernel', ''), target.get('kernel', '')
+    incoming = target.get('kernel', '')
     marker = '\no:unisoc-native-kernel\n'
-    if not incoming or marker not in '\n'+previous+'\n' or marker in '\n'+incoming+'\n':
+    if not incoming or marker in '\n'+incoming+'\n':
         return set()
-    version = next((s[2:] for s in previous.splitlines() if s.startswith('V:')), '')
-    return {name for name, row in installed.items()
-            if name.startswith('kmod-') and marker in '\n'+row+'\n'
-            and '\nD:kernel='+version+'\n' in '\n'+row+'\n'}
+    retired = set()
+    for name, row in installed.items():
+        version = next((s[2:] for s in row.splitlines() if s.startswith('V:')), '')
+        if (name.startswith('kmod-') and marker in '\n'+row+'\n' and version
+                and '\nD:kernel='+version+'\n' in '\n'+row+'\n'):
+            retired.add(name)
+    return retired
+
+
+def retired_kernel_constraints(lines, installed, target, retired):
+    """Drop generated pins whose matching records were already replaced."""
+    versions = {next(s[2:] for s in installed[n].splitlines() if s.startswith('V:'))
+                for n in retired}
+    stale = set()
+    for line in lines:
+        key, equal, version = line.partition('=')
+        name = key.split('@', 1)[0]
+        if (equal and version in versions and name in target
+                and (name == 'kernel' or name.startswith('kmod-'))):
+            actual = next((s[2:] for s in installed.get(name, '').splitlines() if s.startswith('V:')), '')
+            if actual and actual != version:
+                stale.add(line)
+    return stale
 
 
 def shadowed_dnsmasq(installed, target=None):
@@ -527,13 +546,36 @@ class Engine:
         installed_path = self.root/'lib/apk/db/installed'
         installed = package_records(installed_path.read_bytes()) if installed_path.is_file() else {}
         removed_base = set(m.get('base_packages', {}))-set(m.get('target_packages', {}))
+        operations = list(m['operations'])
         target_records = {}
-        for op in m['operations']:
+        for op in operations:
             if op.get('merge') == 'apk-db' and op.get('after'):
                 target_records = package_records(patch.archive.read('blobs/'+op['after']['sha256']))
                 break
+        snapshot = m.get('runtime', {}).get('ota/package-db')
+        if not target_records and snapshot:
+            if snapshot['kind'] != 'file':
+                raise ValueError('Package database snapshot is not a file')
+            target_records = package_records(patch.archive.read('blobs/'+snapshot['sha256']))
         shadowed = shadowed_dnsmasq(installed, target_records)
         retired = retired_kernel_records(installed, target_records)
+        world_path = self.path('etc/apk/world')
+        constraints = retired_kernel_constraints(world_path.read_text().splitlines() if world_path.is_file() else [],
+                                                 installed, target_records, retired)
+        repair_names = retired | {re.split(r'[<>=~@]', line, 1)[0] for line in constraints}
+        repairs = set()
+        # Identical clean releases may need to finish an older live merge.
+        # Repair only our generated records/pins, retaining unrelated package
+        # versions and selections. Normal changes still use the existing merge.
+        if retired:
+            for key, name, merge in (('ota/package-db', 'lib/apk/db/installed', 'apk-db'),
+                                     ('ota/package-world', 'etc/apk/world', 'world')):
+                after = m.get('runtime', {}).get(key)
+                if after and not any(op['path'] == name for op in operations):
+                    if after['kind'] != 'file':
+                        raise ValueError('Package metadata snapshot is not a file: '+key)
+                    operations.append(dict(path=name, before=descriptor(self.path(name)), after=after, merge=merge))
+                    repairs.add(name)
         extra_packages = set(installed)-set(m.get('base_packages', {}))-shadowed-retired
         replaced = package_replacements(installed, target_records, removed_base) | shadowed | retired
         retained = extra_packages | (removed_base - replaced)
@@ -546,7 +588,7 @@ class Engine:
         for name in extra_packages:
             if name in target_records: owned.update(package_paths(target_records[name]))
         ops = []; generated = {}; preserved = []
-        for raw in m['operations']:
+        for raw in operations:
             op = dict(raw); name = op['path']; actual = descriptor(self.path(name))
             after = op['after']; merge = op.get('merge')
             if merge == 'default' and actual is not None or name in owned and merge not in ('apk-db', 'apk-scripts'):
@@ -557,7 +599,8 @@ class Engine:
                 current = self.path(name).read_bytes() if actual else b''
                 if merge == 'apk-db':
                     records = {n:r for n,r in package_records(current).items() if n not in replaced}
-                    records.update({n:r for n,r in package_records(new).items() if n not in extra_packages})
+                    records.update({n:r for n,r in package_records(new).items() if n not in extra_packages
+                                    and (name not in repairs or n in retired)})
                     new = ('\n\n'.join(records[n].rstrip('\n') for n in sorted(records))+'\n\n').encode()
                 elif merge == 'apk-scripts':
                     new = merge_scripts(current, new)
@@ -567,10 +610,13 @@ class Engine:
                     separator = ':' if merge == 'accounts' else None
                     lines = current.decode().splitlines()
                     if merge == 'world':
-                        lines = [line for line in lines if re.split(r'[<>=~@]', line, 1)[0] not in replaced]
+                        lines = [line for line in lines if re.split(r'[<>=~@]', line, 1)[0] not in replaced
+                                 and line not in constraints]
                     keys = {line.split(separator, 1)[0] if separator else re.split(r'[<>=~@]', line, 1)[0] for line in lines}
                     for line in new.decode().splitlines():
                         key = line.split(separator, 1)[0] if separator else re.split(r'[<>=~@]', line, 1)[0]
+                        if name in repairs and key not in repair_names:
+                            continue
                         if key not in keys: lines.append(line); keys.add(key)
                         elif merge == 'world' and key in m.get('base_packages', {}):
                             lines = [line if re.split(r'[<>=~@]', old, 1)[0] == key else old for old in lines]
