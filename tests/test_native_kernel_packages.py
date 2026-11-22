@@ -1,19 +1,19 @@
-"""Native kernel ownership migration is limited to removed clean-base kmods."""
+"""Withdraw generated kernel records without removing user modules or files."""
 import unittest
 from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backend.ota_engine import package_replacements
+from backend.ota_engine import package_replacements, retired_kernel_records
 
 
 class NativeKernelPackages(unittest.TestCase):
-    def test_removed_base_kmod_retires_without_a_false_capability_alias(self):
+    def test_new_native_kernel_does_not_retire_distribution_kmods(self):
         old = {'kernel':'P:kernel\nV:official-r1',
                'kmod-missing':'P:kmod-missing\nD:kernel=official-r1'}
         new = {'kernel':'P:kernel\nV:native-r1\no:unisoc-native-kernel'}
-        self.assertEqual(package_replacements(old, new, {'kmod-missing'}), {'kmod-missing'})
+        self.assertEqual(package_replacements(old, new, {'kmod-missing'}), set())
 
     def test_extra_user_package_and_other_kernel_are_preserved(self):
         old = {'kernel':'P:kernel\nV:official-r1',
@@ -33,3 +33,17 @@ class NativeKernelPackages(unittest.TestCase):
                'plugin':'P:plugin\nD:kernel=official-r1'}
         new = {'kernel':'P:kernel\nV:native-r1\no:unisoc-native-kernel'}
         self.assertEqual(package_replacements(old, new, {'plugin'}), set())
+
+    def test_only_withdrawn_generated_capabilities_are_retired(self):
+        old = {
+            'kernel':'P:kernel\nV:generated-r1\no:unisoc-native-kernel',
+            'kmod-generated':'P:kmod-generated\no:unisoc-native-kernel\nD:kernel=generated-r1',
+            'kmod-user':'P:kmod-user\no:user-build\nD:kernel=generated-r1',
+            'kmod-other':'P:kmod-other\no:unisoc-native-kernel\nD:kernel=other-r1',
+            'user-plugin':'P:user-plugin\no:unisoc-native-kernel\nD:kernel=generated-r1',
+        }
+        new = {'kernel':'P:kernel\nV:distribution-r1\no:feeds/base/kernel/linux'}
+        self.assertEqual(retired_kernel_records(old, new), {'kmod-generated'})
+        self.assertEqual(retired_kernel_records(old, {}), set())
+        self.assertEqual(retired_kernel_records(old, old), set())
+        self.assertEqual(retired_kernel_records(new, new), set())
