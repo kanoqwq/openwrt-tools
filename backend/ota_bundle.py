@@ -5,6 +5,7 @@ import json
 import hashlib
 import stat
 import zipfile
+from .macos_launch import APPS, content as mac_launcher
 
 
 def write_runtime(archive, path, name):
@@ -66,13 +67,21 @@ def export_bundle(patch, output, runtime):
                 else:
                     continue
                 write_runtime(z, runtime / name, dest)
+            if any(name.startswith('OpenWrt-Diff-Studio.app/') for name in build['files']):
+                entry = zipfile.ZipInfo(APPS['OpenWrt-Updater.app'])
+                entry.create_system = 3
+                entry.external_attr = (stat.S_IFREG | 0o755) << 16
+                entry.compress_type = zipfile.ZIP_DEFLATED
+                z.writestr(entry, mac_launcher('OpenWrt-Updater.app'))
             z.writestr('README.md', '# OpenWrt differential OTA\n\n'
                         'Web: import update.ota in System > System patches.\n'
                         'Desktop: extract the complete folder and open OpenWrt-Updater.exe / .app.\n'
+                        'macOS first launch: OpenWrt-Updater-macOS.command repairs this package only, then opens the app.\n'
                         'Python: python OpenWrt-Updater.py update update.ota --host DEVICE_IP '
                         '(requires paramiko).\n\n'
                         '网页：系统 → 系统补丁，导入 update.ota。\n'
                         '电脑：完整解压后打开 OpenWrt-Updater.exe。\n'
+                        'Mac 首次运行：双击 OpenWrt-Updater-macOS.command，一键修复当前包的权限和下载隔离后打开 APP。\n'
                         '仅使用可信补丁；先核对目标版本、机型和冲突检查。\n'
                         '更新后请重启；网页支持撤销上次补丁。\n'
                         '旧系统没有 OTA 插件／Python：使用电脑更新程序首次更新，完成后即可在网页导入后续补丁。\n'

@@ -129,6 +129,9 @@ def main():
         if not resolved.is_relative_to(artifact.resolve()): raise ValueError('Invalid artifact target')
         shutil.rmtree(resolved)
     shutil.copytree(work/'dist/openwrt-backend',destination)
+    if mac:
+        from backend.macos_launch import attach as mac_launcher
+        mac_launcher(artifact, 'OpenWrt-Installer.app')
     subprocess.run([str(tools/('adb' if mac else 'adb.exe')),'version'],check=True,stdout=subprocess.DEVNULL)
     if sources() != before:
         raise ValueError('Source changed during compilation; rebuild before packaging')

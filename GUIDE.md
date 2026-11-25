@@ -12,13 +12,18 @@ E5 安装器检测到型号或板号不匹配时会展示机型差异。确定�
 可在弹窗输入小写 `yes` 继续，再确认最终安装计划；取消不会修改分区或清空 Android 数据。
 屏幕、充电及启动可能不兼容；该选择不跳过分区、容量、载荷或 NV 校验。
 
-MU300 系列在 Windows 通过有线 ADB 检查设备时，安装器会自动禁用该设备的 MTP 文件传输接口并显示通知，以避开原厂 USB 冲突。ADB、USB 网卡和串口保持启用，MTP 不会自动恢复。禁用失败只提示，不中断安装。无额外安装器确认步骤；Windows 可能请求管理权限。无线 ADB、macOS 和 E5 系列跳过处理。
+有线 ADB 确认执行后，安装器会尝试从当前 USB 组合中移除 MTP，保留 ADB、原有 ECM／NCM／RNDIS 网络和其他功能，不写持久属性。原设备 ADB 和 root 恢复即可继续；即使 MTP 仍在、USB 属性没有更新，也不会因此卡住。无线 ADB、只读检查和枚举不修改 USB。切换时若设备要求重新允许 ADB，请在设备上授权。
 
 只有无线 ADB 时，先将电脑连接到设备所在网络，展开设备选择区的“无线 ADB 连接”，填写 `192.168.0.1` 并点击“连接”。地址或端口不同请填写实际值，例如 `192.168.0.1:5555`。设备需已开启无线 ADB；Android 要求配对时，先按设备提示完成配对。
 
 也可手动运行 `adb connect 192.168.0.1`。Windows 可在安装包目录打开 PowerShell，运行 `.\tools\adb.exe connect 192.168.0.1`。
 
 Apple Silicon Mac 请打开完整解压目录中的 **OpenWrt-Installer.app**，保留相邻的 `tools`、`files` 等目录，无需另装 Python、Node 或 Rust。不要只把 APP 拖到“应用程序”目录。如果 macOS 阻止打开，请确认安装包来源后，在“系统设置 → 隐私与安全性”中允许打开。若提示找不到安装包，请选择完整解压、同时包含 APP 和 `tools` 的安装包目录；缺少文件时请重新完整解压。选错目录可以重新选择，取消则退出安装器。
+
+Mac 首次运行可双击 **OpenWrt-Installer-macOS.command**：自动修复当前包的
+APP、ADB 和后端权限及下载隔离标记，然后打开安装器，无需手输递归 xattr。
+仅对来源可信且完整解压的包使用此入口。它不改变系统全局安全设置，也不等于
+Apple 公证；若系统连此入口也拦截，请在“隐私与安全性”中允许它一次。
 
 Linux、Intel Mac 或需要 Python 命令行入口时，可使用 **OpenWrt-Installer.py**，需另行安装 Python 和依赖。Apple Silicon Mac 的 `launchers/start-installer.sh` 可直接使用随包命令行后端。使用 Magisk 安装时，直接选择完整 ZIP；这会部署到 TF 卡并清空选定目标，请先备份卡内数据。
 
@@ -183,7 +188,9 @@ both identities. Type lowercase `yes` to continue with that package, then review
 and confirm the final plan. Canceling writes nothing. Display, charging or boot
 may be incompatible; partition, capacity, payload and NV checks still run.
 
-For MU300-series devices checked over wired ADB on Windows, the installer automatically disables only that device's MTP interface and displays a notification, avoiding the stock USB conflict. ADB, USB networking and serial interfaces stay enabled; MTP is not re-enabled. Failure only shows a warning and does not interrupt installation. There is no extra installer confirmation; Windows may request administrator permission. Wireless ADB, macOS and the E5 adapter skip this workaround.
+After a confirmed task starts over wired ADB, the installer tries to remove MTP from the current USB composition while preserving ADB, the existing ECM/NCM/RNDIS network and other functions. Once the original device's ADB, boot identity and root are verified, installation continues even if MTP remains or USB properties have not updated. Wireless ADB, discovery and read-only inspection do not change USB.
+
+On Apple Silicon, double-click **OpenWrt-Installer-macOS.command** for the first launch of a trusted, fully extracted package. It repairs this package's App, ADB and backend permissions and download quarantine attributes, then opens the installer. It does not change global security settings or provide Apple notarization. If macOS blocks the script itself, allow that entry once in Privacy & Security.
 
 For wireless ADB only, connect the computer to the device’s network, expand Wireless ADB connection, enter `192.168.0.1` and select Connect. Use the actual address and port if different, for example `192.168.0.1:5555`. Wireless ADB must already be enabled. If Android requires pairing, complete it on the device first.
 

@@ -45,6 +45,8 @@ class DiffPackaging(unittest.TestCase):
         self.assertNotIn('tools/adb.exe',manifest['files']);self.assertNotIn('tools/macos/adb',manifest['files'])
         self.assertFalse(any(n.startswith('files/') for n in manifest['files']))
         self.assertEqual(list(self.root.rglob('openwrt.ext4.gz')),[self.root/'files/openwrt.ext4.gz'])
+        self.assertIn('OpenWrt-Diff-Studio-macOS.command', manifest['files'])
+        self.assertTrue((self.root/'backend/macos_launch.py').is_file())
 
     def test_export_contains_both_updaters_and_no_full_installer_payload(self):
         tool['attach'](self.root);patch=self.root.parent/'test.ota';patch.write_bytes(b'opaque patch fixture')
@@ -55,6 +57,9 @@ class DiffPackaging(unittest.TestCase):
                 self.assertIn(name,names)
             self.assertFalse(any('Installer' in n or n.startswith('files/') or 'adb' in n for n in names))
             self.assertEqual(names.count('update.ota'),1)
+            self.assertIn('OpenWrt-Updater-macOS.command', names)
+            self.assertEqual((z.getinfo('OpenWrt-Updater-macOS.command').external_attr >> 16) & 0o777, 0o755)
+            self.assertIn(b'OpenWrt-Updater.app', z.read('OpenWrt-Updater-macOS.command'))
             exported=self.root.parent/'extracted';z.extractall(exported)
         result=subprocess.run([sys.executable,'-B',str(exported/'OpenWrt-Updater.py'),'--help'],cwd=exported,
                               env=dict(os.environ,PYTHONPATH=''),capture_output=True,text=True)

@@ -12,6 +12,7 @@ from package_gui import digest
 from resources import asset, ASSETS
 from package_gui import sources, validate_artifact
 from build import native_platform
+from backend.macos_launch import attach as mac_launcher
 
 
 def main():
@@ -30,7 +31,7 @@ def main():
             raise ValueError('Select a new output directory (Windows --refresh requires an unchanged owned directory)')
         recorded=json.loads((a.output/'diff-tool.json').read_text(encoding='utf-8'))
         expected={'OpenWrt-Diff-Studio.exe','OpenWrt-Diff-Studio.py'}
-        expected.update('backend/'+n for n in ('__init__.py','resources.py','host.py','ssh_runtime.py','mu300_update.py','native_boot.py','ota_engine.py','ota_package.py','release_index.py','ota_desktop.py','ota_bundle.py','ota_runtime.py','lz4raw-aarch64.so','build.json'))
+        expected.update('backend/'+n for n in ('__init__.py','resources.py','host.py','ssh_runtime.py','mu300_update.py','native_boot.py','ota_engine.py','ota_package.py','release_index.py','ota_desktop.py','ota_bundle.py','ota_runtime.py','macos_launch.py','lz4raw-aarch64.so','build.json'))
         expected.update('backend/'+n for n in ASSETS if n not in ('storage-e5.sh','storage-mu300.sh','release-index.py'))
         expected.update(path.relative_to(artifact).as_posix() for path in (artifact/'tools/backend').rglob('*') if path.is_file())
         actual={path.relative_to(a.output).as_posix() for path in a.output.rglob('*') if path.is_file() and path.name!='diff-tool.json'}
@@ -58,12 +59,13 @@ def main():
             subprocess.run(['codesign', '--force', '--deep', '--sign', '-', str(app)], check=True)
             dest = a.output / 'tools/macos/backend'
             shutil.copytree(artifact / 'tools/macos/backend', dest)
+            mac_launcher(a.output, 'OpenWrt-Diff-Studio.app')
         else:
             shutil.copy2(artifact / 'OpenWrt-Installer.exe', a.output / 'OpenWrt-Diff-Studio.exe')
             shutil.copytree(artifact / 'tools/backend', a.output / 'tools/backend', dirs_exist_ok=a.refresh)
         shutil.copy2(installer / 'ota-tool.py', a.output / 'OpenWrt-Diff-Studio.py')
         (a.output / 'backend').mkdir(exist_ok=a.refresh)
-        for name in ('__init__.py', 'resources.py', 'host.py', 'ssh_runtime.py', 'mu300_update.py', 'native_boot.py', 'ota_engine.py', 'ota_package.py', 'release_index.py', 'ota_desktop.py', 'ota_bundle.py', 'ota_runtime.py', 'lz4raw-aarch64.so', 'build.json'):
+        for name in ('__init__.py', 'resources.py', 'host.py', 'ssh_runtime.py', 'mu300_update.py', 'native_boot.py', 'ota_engine.py', 'ota_package.py', 'release_index.py', 'ota_desktop.py', 'ota_bundle.py', 'ota_runtime.py', 'macos_launch.py', 'lz4raw-aarch64.so', 'build.json'):
             source = installer/'ota-native'/name if name in ('lz4raw-aarch64.so','build.json') else installer/'backend'/name
             shutil.copy2(source, a.output / 'backend' / name)
         for name in ASSETS:

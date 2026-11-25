@@ -130,14 +130,32 @@ class UsbConfigTest(unittest.TestCase):
             self.run_usb(adb, boundary=Mock(side_effect=[None, RuntimeError('cancelled')]))
         self.assertEqual(adb.writes, [])
 
-    def test_incorrect_readback_stops_before_continuing(self):
-        for change in ({'config': 'mtp,adb'}, {'state': 'mtp,adb'}, {'config': 'rndis'}, {'boot': ''}):
+    def test_mtp_or_stale_usb_properties_never_block_working_adb(self):
+        for change in ({'config': 'rndis,mtp,adb', 'state': 'rndis,mtp,adb'},
+                       {'config': 'mtp,adb'}, {'state': 'mtp,adb'}, {'config': 'rndis'},
+                       {'config': '', 'state': ''}, {'state': 'none'}):
             adb = FakeAdb(); notice = Mock()
             for key, value in change.items(): setattr(adb, key, value)
-            with self.subTest(change=change), self.assertRaisesRegex(usb.UsbPreparationError, 'timed out'):
-                self.run_usb(adb, notify=notice)
+            with self.subTest(change=change):
+                result = self.run_usb(adb, notify=notice)
+                self.assertEqual(result['config'], adb.config)
+                self.assertEqual(result['requested_config'], 'rndis,adb')
             self.assertEqual(len(adb.writes), 1)
-            self.assertEqual(notice.call_args.args[0]['code'], 'usb_prepare_failed')
+            self.assertEqual(notice.call_args.args[0]['code'], 'usb_ready')
+            self.assertEqual(sum(s.startswith('printf ') for s, _ in adb.calls), 2)
+
+    def test_ecm_ncm_and_vendor_functions_are_preserved_in_the_actual_write(self):
+        for network in ('ecm', 'ncm', 'rndis', 'vendor_network'):
+            adb = FakeAdb()
+            adb.original = network + ',diag,mtp,adb'
+            adb.config = adb.state = adb.original  # Vendor ignores setprop; ADB works.
+            self.run_usb(adb)
+            self.assertEqual(adb.writes, ['setprop sys.usb.config ' + network + ',diag,adb'])
+
+    def test_missing_boot_identity_still_stops_before_continuing(self):
+        adb = FakeAdb(); adb.boot = ''
+        with self.assertRaisesRegex(usb.UsbPreparationError, 'timed out'):
+            self.run_usb(adb)
 
     def test_changed_boot_or_lost_root_is_not_accepted(self):
         for change in ({'boot': 'different-boot'}, {'root': '2000'}):

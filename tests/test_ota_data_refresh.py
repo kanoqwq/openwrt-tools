@@ -67,7 +67,7 @@ class DataRefreshTests(unittest.TestCase):
                         import shutil
                         shutil.rmtree(artifact/'tools')
                         (artifact/'OpenWrt-Installer.exe').unlink()
-                        names=['OpenWrt-Installer.app/Contents/MacOS/openwrt-installer','OpenWrt-Installer.app/Contents/Info.plist','OpenWrt-Installer.app/Contents/Resources/icon.icns','tools/macos/adb','tools/macos/backend/openwrt-backend']
+                        names=['OpenWrt-Installer.app/Contents/MacOS/openwrt-installer','OpenWrt-Installer.app/Contents/Info.plist','OpenWrt-Installer.app/Contents/Resources/icon.icns','tools/macos/adb','tools/macos/backend/openwrt-backend','OpenWrt-Installer-macOS.command']
                         meta['files']={}
                         for name in names:
                             p=artifact/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b'UNCHANGED-NATIVE')

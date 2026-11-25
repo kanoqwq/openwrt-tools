@@ -18,7 +18,7 @@ export const strings = {
     nvRecoveryYes:'输入 yes 后继续', nvRecoveryCancel:'暂不继续', nvRecoveryWaiting:'等待确认 NV 恢复方式；尚未覆盖系统。',
 
     usbPreparing:'正在准备有线 USB 连接', usbPreparingDesc:'正在移除 USB 组合中的 MTP，保留 ADB、现有 USB 网络和其他功能。等待设备重新连接；如弹出 USB／ADB 授权，请允许。',
-    usbReady:'USB 连接已恢复', usbReadyDesc:'设备身份、USB 组合和 root 已核对，继续执行任务。', usbPrepareFailed:'USB 连接准备失败',
+    usbReady:'USB 连接已恢复', usbReadyDesc:'设备身份、ADB 和 root 已核对，继续执行任务。MTP 保留或 USB 属性尚未更新不会阻止安装。', usbPrepareFailed:'USB 连接准备失败',
     uninstallCancel:'取消卸载', uninstallResetQuestion:'无法保留 Android 数据卸载，是否格式化？',
     uninstallResetExplanation:'格式化会清空 Android 应用、账号、照片和内部存储。取消不会修改分区或清空 Android 数据；选择格式化后会先展示新的卸载计划，不会立即执行。',
     uninstallJournalRecovery:'正在回放 OpenWrt 文件系统日志，完成后继续核验卸载计划…', uninstallPreserveAndroid:'删除内置 OpenWrt 及其设置，归还空间后通过原厂工具在解密映射挂载前扩容 F2FS，保留 Android 数据。必要时临时加入 Android 启动维护步骤，完成后恢复原启动镜像。最终核验文件系统身份和容量；失败不会自动格式化。', uninstallChooseReset:'选择格式化并查看计划', uninstallPreserve:'删除内置 OpenWrt 及其设置，在离线环境检查并扩容未加密 userdata，保留 Android 数据。请仍备份重要文件；检查失败会停止，不会自动格式化。',
@@ -111,7 +111,7 @@ export const strings = {
     nvRecoveryYes:'Type yes to continue', nvRecoveryCancel:'Not now', nvRecoveryWaiting:'Awaiting your NV recovery choice; the system has not been overwritten.',
 
     usbPreparing:'Preparing wired USB connection', usbPreparingDesc:'Removing MTP while keeping ADB, existing USB networking and other functions. Waiting for reconnection; allow USB/ADB access if prompted.',
-    usbReady:'USB connection restored', usbReadyDesc:'Device identity, USB composition and root verified. Continuing the task.', usbPrepareFailed:'USB connection preparation failed',
+    usbReady:'USB connection restored', usbReadyDesc:'Device identity, ADB and root verified. Continuing even if MTP remains or USB properties have not updated.', usbPrepareFailed:'USB connection preparation failed',
     uninstallCancel:'Cancel removal', uninstallResetQuestion:'Cannot preserve Android data. Format instead?',
     uninstallResetExplanation:'Formatting erases Android apps, accounts, photos and internal storage. Cancel does not change partitions or erase Android data. Choosing format first opens a new removal plan; it does not execute it.',
     uninstallJournalRecovery:'Recovering the OpenWrt filesystem journal, then continuing uninstall checks…', uninstallPreserveAndroid:'Remove internal OpenWrt and its settings, return the space, and grow decrypted F2FS before mounting it with this device’s stock tools. If needed, temporarily add Android boot maintenance and restore the original boot image afterwards. Preserve Android data and verify filesystem identity and capacity. Failures never trigger formatting.', uninstallChooseReset:'Choose format and review plan', uninstallPreserve:'Remove internal OpenWrt and its settings, then check and grow unencrypted userdata offline while preserving Android data. Back up important files. Failed checks stop the operation; they never trigger automatic formatting.',

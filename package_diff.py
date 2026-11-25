@@ -14,10 +14,11 @@ import shutil
 import sys
 import zipfile
 from resources import ASSETS, asset
+from backend.macos_launch import APPS, attach as mac_launcher
 
 TOP=Path(__file__).resolve().parent
 SUPPORT=('__init__.py','resources.py','host.py','ssh_runtime.py','mu300_update.py','native_boot.py','ota_engine.py','ota_package.py','release_index.py','ota_desktop.py',
-         'ota_bundle.py','ota_runtime.py',
+         'ota_bundle.py','ota_runtime.py','macos_launch.py',
          *(n for n in ASSETS if n not in ('storage-e5.sh','storage-mu300.sh','release-index.py')))
 
 
@@ -46,7 +47,7 @@ def export_standalone(release, output):
         for name,wanted in files.items():
             path=PurePosixPath(name)
             if (path.is_absolute() or '..' in path.parts or '\\' in name or
-                (name not in required and not name.startswith(('backend/','tools/backend/',
+                (name not in required and name != APPS['OpenWrt-Diff-Studio.app'] and not name.startswith(('backend/','tools/backend/',
                  'tools/macos/backend/','OpenWrt-Diff-Studio.app/')))):
                 raise ValueError('Unexpected Diff Studio file: '+name)
             with source.open(name) as stream:
@@ -90,6 +91,7 @@ def attach(package):
         raise ValueError('Diff Studio staging already exists; do not overwrite it')
     shutil.copy2(package/'OpenWrt-Installer.exe',package/'OpenWrt-Diff-Studio.exe')
     shutil.copytree(package/'OpenWrt-Installer.app',package/'OpenWrt-Diff-Studio.app')
+    owned.add(mac_launcher(package, 'OpenWrt-Diff-Studio.app'))
     owned.add('OpenWrt-Diff-Studio.exe')
     owned.update(p.relative_to(package).as_posix() for p in (package/'OpenWrt-Diff-Studio.app').rglob('*') if p.is_file())
     shutil.copy2(TOP/'ota-tool.py',package/'OpenWrt-Diff-Studio.py')

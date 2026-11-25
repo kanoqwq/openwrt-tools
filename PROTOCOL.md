@@ -69,7 +69,11 @@ Schema 3 extends schema 2 with `installation_evidence`: hashes of the installed 
 
 On import/restart, before/after snapshots are recomputed from the saved **current** layout using the adjacent-root rule. Hash changes cannot authorize a wider target or alter unrelated entries. Once armed, resume uses the new uninstall record, not any original installation record or deleted root markers. Recovery from an interrupted inactive-boot write still requires exact saved GPT/misc/Android checks; when boot staging alone must be retried, the original Linux boot proof comes from its checksummed **new uninstall backup** while root evidence is checked live. Completed GPT work and formatting are never replayed. If this new record is lost while `openwrt.uninstall=1` is staged, the existing pending-operation guard still stops new plans; absence of an old installation record is not permission to guess an interrupted removal.
 
-`notice` events carry a fixed localized `code` (`mtp_disabled` or `mtp_disable_failed`) and optional device `label`. Only the MU300 adapter enables the Windows wired-ADB MTP workaround for a selected device; enumeration alone, wireless ADB, macOS and the E5 adapter are unchanged. Windows problem code 22 confirms successful disable. A failure only emits a warning and does not stop the original workflow. MTP is never automatically re-enabled.
+Confirmed wired-ADB tasks emit `usb_preparing`, then `usb_ready` or `usb_prepare_failed`.
+The current USB composition loses only MTP; existing network and other functions remain.
+Reconnection verifies the selected serial, unchanged boot identity and root. USB property
+equality and absence of MTP are not acceptance conditions. Enumeration and wireless ADB
+do not change USB; resumed maintenance writers are not interrupted.
 
 
 Online F2FS internal installation (protocol 1 extension): the plan may contain

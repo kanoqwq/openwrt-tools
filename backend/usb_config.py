@@ -6,7 +6,7 @@ import time
 
 
 class UsbPreparationError(RuntimeError):
-    """Stop before backup/writes; an unsuccessful USB change is not a boot wait."""
+    """Stop before backup/writes when the selected ADB device cannot be verified."""
 
 
 def functions(value):
@@ -28,13 +28,6 @@ def without_mtp(value):
     if any(part.lower() == 'none' for part in target):
         raise UsbPreparationError('Invalid USB composition; no change was made / USB 组合格式异常，未执行更改')
     return ','.join(target)
-
-
-def same_functions(value, expected):
-    # Android may briefly expose an empty property while rebuilding configfs.
-    if not value or not value.strip():
-        return False
-    return sorted(p.lower() for p in functions(value)) == sorted(p.lower() for p in functions(expected))
 
 
 def prepare(adb, boot_id, *, notify=None, boundary=None, timeout=120):
@@ -65,7 +58,8 @@ def prepare(adb, boot_id, *, notify=None, boundary=None, timeout=120):
         check()
         try:
             # Exactly one write. A USB disconnect can precede the shell's exit
-            # status; only verified readback below may declare it successful.
+            # status. Reconnection is authoritative; vendor USB properties may
+            # retain MTP or lag behind the actual working transport.
             adb.shell('setprop sys.usb.config '+shlex.quote(target), root=True, timeout=min(10, timeout))
         except (ConnectionError, OSError, TimeoutError, subprocess.TimeoutExpired) as error:
             last_error = error
@@ -85,20 +79,18 @@ def prepare(adb, boot_id, *, notify=None, boundary=None, timeout=120):
                     fields = dict(line.split('=', 1) for line in state.splitlines() if '=' in line)
                     if fields.get('BOOT') and fields['BOOT'] != boot_id:
                         raise UsbPreparationError('Device rebooted or changed during USB reconnection; inspect again / USB 重连期间设备已重启或发生变化，请重新检查')
-                    ready = (fields.get('BOOT') == boot_id and
-                             same_functions(fields.get('CONFIG', 'none'), target) and
-                             (not fields.get('STATE') or same_functions(fields['STATE'], target)))
+                    ready = fields.get('BOOT') == boot_id
                     stable = stable+1 if ready else 0
                     if stable >= 2:
                         if adb.shell('id -u', root=True, timeout=budget).strip() != '0':
                             raise UsbPreparationError('Root is unavailable after USB reconnection / USB 重连后 root 不可用，请重新授权')
                         notice('usb_ready')
-                        return {'changed': True, 'config': target}
+                        return {'changed': True, 'config': fields.get('CONFIG', ''), 'requested_config': target}
             except (ConnectionError, OSError, TimeoutError, subprocess.TimeoutExpired) as error:
                 last_error = error
                 stable = 0
             time.sleep(min(.5, max(0, deadline-time.monotonic())))
-        raise UsbPreparationError('USB reconnection or configuration verification timed out; reconnect the cable and allow USB/ADB access, then retry / USB 重连或配置校验超时，请重新插线、允许 USB／ADB 授权后重试') from last_error
+        raise UsbPreparationError('USB reconnection timed out; reconnect the cable and allow USB/ADB access, then retry / USB 重连超时，请重新插线、允许 USB／ADB 授权后重试') from last_error
     except BaseException:
         notice('usb_prepare_failed')
         raise

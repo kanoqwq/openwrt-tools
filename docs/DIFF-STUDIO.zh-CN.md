@@ -4,6 +4,8 @@
 
 - Windows：双击根目录 `OpenWrt-Diff-Studio.exe`，无需另装 Python。
 - Apple Silicon Mac：打开根目录 `OpenWrt-Diff-Studio.app`，无需另装 Python。
+- Mac 首次运行也可双击 `OpenWrt-Diff-Studio-macOS.command`，一键修复当前包
+  的权限和下载隔离标记后打开 App；仅用于可信来源的完整解压包，不改全局安全设置。
 - Python 命令行：`python OpenWrt-Diff-Studio.py --help`，需安装 Python 和相应依赖。
 
 Diff Studio 与安装器共用包内 `tools` 后端。不要单独复制 EXE 或 APP；
@@ -16,6 +18,8 @@ Diff Studio 与安装器共用包内 `tools` 后端。不要单独复制 EXE 或
 生成的包包含网页可导入的 `update.ota` 和电脑更新入口。
 可以在 OpenWrt 网页“系统补丁”导入，也可以完整解压生成包后，
 运行 `OpenWrt-Updater.exe` 或 `OpenWrt-Updater.app`，连接设备并更新。
+Mac 更新器还附带 `OpenWrt-Updater-macOS.command`。若系统连 `.command` 也拦截，
+需要在“隐私与安全性”允许此入口一次；这不等于 Developer ID 签名或 Apple 公证。
 更新保留用户插件、配置和数据；本地文件冲突按界面提示处理。
 更新过程中保持设备供电和连接，完成后按页面提示操作。
 

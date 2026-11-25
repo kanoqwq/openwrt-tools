@@ -12,6 +12,20 @@ from archive_tools import write_member
 
 
 class ArchiveTimestamps(unittest.TestCase):
+    def test_mac_repair_launchers_keep_execute_bits_on_windows_archives(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); source = root/'launcher'
+            source.write_bytes(b'#!/bin/sh\n'); source.chmod(0o644)
+            archive = root/'package.zip'
+            names = ('OpenWrt-Installer-macOS.command', 'OpenWrt-Diff-Studio-macOS.command',
+                     'OpenWrt-Updater-macOS.command')
+            with zipfile.ZipFile(archive, 'w') as stream:
+                for name in names:
+                    write_member(stream, source, name)
+            with zipfile.ZipFile(archive) as stream:
+                for name in names:
+                    self.assertEqual(stat.S_IMODE(stream.getinfo(name).external_attr >> 16), 0o755)
+
     def test_reproducible_epoch_and_future_times_fit_zip(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td);source=root/'input';source.write_bytes(b'verified package bytes')

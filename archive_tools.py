@@ -16,6 +16,8 @@ def write_member(archive, path, name):
         magic = stream.read(4) if mac else b''
         executable = (app and '/Contents/MacOS/' in name
                       or name in ('tools/macos/adb', 'tools/macos/backend/openwrt-backend')
+                      or name in ('OpenWrt-Installer-macOS.command', 'OpenWrt-Diff-Studio-macOS.command',
+                                  'OpenWrt-Updater-macOS.command')
                       or name.startswith('launchers/') and name.endswith('.sh')
                       or mac and magic in (b'\xcf\xfa\xed\xfe', b'\xce\xfa\xed\xfe',
                                            b'\xfe\xed\xfa\xcf', b'\xfe\xed\xfa\xce',

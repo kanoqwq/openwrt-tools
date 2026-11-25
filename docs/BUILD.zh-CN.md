@@ -12,8 +12,10 @@ Linux/WSL 唯一工作区 /home/kano/openwrt-build。独立仓库通过 tools/bu
 `sys.usb.config`，只移除其中的 `mtp`，保留现有 USB 网络、ADB 及其他功能；
 必要时补上 `adb`。例如 `ecm,mtp,adb` 变为 `ecm,adb`，不会强制改成 RNDIS。
 没有 MTP 时不写属性。仅修改当前组合，不写持久属性。
-切换后最多等待 120 秒，核对原序列号、同次启动身份、配置生效和 root，
-再开始备份／安装。Android 控制端同时丢弃旧 USB 句柄，按系统要求重新授权。
+切换后最多等待 120 秒让 ADB 恢复，核对原序列号、同次启动身份和 root，
+再开始备份／安装。MTP 仍保留、USB 属性未更新或顺序不同均不阻塞，不等待
+属性与请求组合完全相等。现有 ECM／NCM／RNDIS 或厂商网络功能原样保留，
+不会固定选择 RNDIS。Android 控制端同时丢弃旧 USB 句柄，按系统要求重新授权。
 无线 ADB、设备枚举和查看计划不改变 USB 配置；续接进行中的离线写入或
 已启动的在线缩容时跳过此步骤，避免干扰维护进程。
 旧 `windows_mtp.py` 仅保留为空兼容入口，不再禁用 Windows 的 MTP 设备节点。
@@ -54,6 +56,14 @@ python3 tools/build-release.py run --workspace /home/kano/openwrt-build --label 
 签名配置与密钥在仓库外，密码不写命令行或 Git。保留现有证书轮换 lineage，保证覆盖升级身份一致。只在用户确认控制端空闲时安装 APK；构建不等于实机安装/分区验收。
 
 ## Apple Silicon macOS
+
+正式包附带 OpenWrt-Installer-macOS.command；Diff Studio 和其导出的更新器
+分别附带对应的 -macOS.command。用户完整解压并确认来源可信后双击，
+只修复该 App 和相邻 tools/macos 的权限、移除 com.apple.quarantine，
+再打开 App。脚本不改全局 Gatekeeper、不使用 sudo、不重签或修改二进制内容。
+ZIP 生成器强制保留这些入口的执行位，Windows 组包也相同。
+这不是 Apple Developer ID 签名或公证；系统若连脚本也拦截，仍需用户在
+“隐私与安全性”允许此入口一次，不能承诺无证书时自动获得系统信任。
 
 用户没有本地 Mac Agent。macOS App 只能使用真实 Apple Silicon 原生环境；按用户授权可使用本仓库的 macOS GitHub Actions。不能用旧 App 冒充新源码，也不能要求用户恢复不存在的 Mac 连接。下载产物后核验 sources()、架构及文件摘要，再接入父仓库打包。
 

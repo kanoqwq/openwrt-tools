@@ -7,6 +7,9 @@ import tempfile
 artifact = Path(__file__).resolve().parents[1]/'artifacts/macos-arm64'
 backend = artifact/'tools/macos/backend/openwrt-backend'
 gui = artifact/'OpenWrt-Installer.app/Contents/MacOS/openwrt-installer'
+launcher = artifact/'OpenWrt-Installer-macOS.command'
+assert launcher.is_file() and launcher.stat().st_mode & 0o111
+subprocess.run(['sh', '-n', str(launcher)], check=True)
 assert subprocess.check_output(['lipo','-archs',str(gui)],text=True).strip() == 'arm64'
 subprocess.run(['codesign','--verify','--deep','--strict',str(artifact/'OpenWrt-Installer.app')],check=True)
 assert 'arm64' in subprocess.check_output(['lipo','-archs',str(backend)],text=True)

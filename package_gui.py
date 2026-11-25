@@ -53,12 +53,12 @@ def validate_artifact(artifact, platform, source):
                 'tools/AdbWinUsbApi.dll','tools/backend/openwrt-backend.exe'} if platform == 'windows-x64' else {
                 'OpenWrt-Installer.app/Contents/MacOS/openwrt-installer',
                 'OpenWrt-Installer.app/Contents/Info.plist','OpenWrt-Installer.app/Contents/Resources/icon.icns',
-                'tools/macos/adb','tools/macos/backend/openwrt-backend'}
+                'tools/macos/adb','tools/macos/backend/openwrt-backend','OpenWrt-Installer-macOS.command'}
     if not required.issubset(files):
         raise ValueError('Portable GUI build is incomplete: '+', '.join(sorted(required-set(files))))
     for name, wanted in files.items():
         allowed = (name == 'OpenWrt-Installer.exe' or name.startswith('tools/') and not name.startswith('tools/macos/')) if platform == 'windows-x64' else (
-            name.startswith('OpenWrt-Installer.app/') or name.startswith('tools/macos/'))
+            name == 'OpenWrt-Installer-macOS.command' or name.startswith('OpenWrt-Installer.app/') or name.startswith('tools/macos/'))
         path = (artifact/name).resolve()
         if (not allowed or '\\' in name or not path.is_relative_to(artifact) or not path.is_file()
                 or digest(path) != wanted):
@@ -108,6 +108,7 @@ def attach(package, artifact=None, required=True):
         # PyInstaller framework links are flattened for Windows ZIP extractors.
         replace_tree(mac/'OpenWrt-Installer.app', package/'OpenWrt-Installer.app', package)
         replace_tree(mac/'tools/macos', package/'tools/macos', package)
+        shutil.copy2(mac/'OpenWrt-Installer-macOS.command', package/'OpenWrt-Installer-macOS.command')
     docs = package/'docs'
     docs.mkdir(exist_ok=True)
     shutil.copy2(HERE/'GUIDE.md', docs/'GUI-GUIDE.md')

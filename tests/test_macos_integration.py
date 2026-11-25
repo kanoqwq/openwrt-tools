@@ -42,7 +42,7 @@ class MacIntegrationTest(unittest.TestCase):
                  'tools/AdbWinUsbApi.dll', 'tools/backend/openwrt-backend.exe') if platform == 'windows-x64' else (
                  'OpenWrt-Installer.app/Contents/MacOS/openwrt-installer',
                  'OpenWrt-Installer.app/Contents/Info.plist', 'OpenWrt-Installer.app/Contents/Resources/icon.icns',
-                 'tools/macos/adb', 'tools/macos/backend/openwrt-backend')
+                 'tools/macos/adb', 'tools/macos/backend/openwrt-backend', 'OpenWrt-Installer-macOS.command')
         for name in names:
             target = root/name
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -116,6 +116,7 @@ class MacIntegrationTest(unittest.TestCase):
         mac.rename(target)
         self.assertTrue(self.attach(windows))
         self.assertTrue((self.package/'OpenWrt-Installer.app').is_dir())
+        self.assertTrue((self.package/'OpenWrt-Installer-macOS.command').is_file())
 
     def test_missing_mac_refuses_release_before_any_copy(self):
         windows = self.artifact('windows-x64')

@@ -189,3 +189,47 @@ A native Windows Tauri release and optimized PyInstaller backend were rebuilt fr
 Validation passed against disposable copies of both original `20261016-pd-win-macos` kernel packages: actual frozen patch application twice, compatible CLI package check, NDJSON package verification and identical firmware payload hashes. The actual frozen update backend passed all four modes (legacy/sd/part/data-image) against both old and patched package entries, using real package boot repacking and simulated SSH. The frozen binary reader/backup checks pass for both old packages. The backend suite runs 118 tests: 114 passed, 4 skipped, including four patch corruption/path/idempotence tests. A real native EXE opened, spawned its private backend and closed normally with isolated application data; screenshot and JSON evidence are `verification/hidden-update-native-gui.*`. No ADB/SSH device connection or hardware write was performed.
 
 Patch sizes: GUI 3.51 MiB; Windows backend 31.93 MiB; firmware 0 bytes; ZIP 15.50 MiB. Source/binary fingerprints and final ZIP SHA256/CRC were checked. Per-file evidence uses `verification/hidden-update-*`; the archive SHA256 is in the adjacent `.zip.sha256` file. Existing published firmware archives were preserved.
+# 2026-11-25: USB preparation and macOS first-launch repair
+
+Wired ADB still attempts one current-composition setprop, removing only MTP.
+Readback accepts retained MTP, reordered/delayed/missing USB properties when the
+selected device, unchanged boot identity and root are usable. ECM, NCM, RNDIS
+and vendor functions are preserved; no persistent USB property is written.
+
+The native Mac installer artifact, full firmware attachment, standalone Diff
+Studio and exported desktop updater now carry a matching -macOS.command.
+It restores this package's App/backend/ADB permissions and removes only
+com.apple.quarantine from that App and tools/macos, then opens the App.
+Tests execute the actual shell against private POSIX files/xattrs with macOS
+command doubles. They cover spaces/quotes/non-ASCII paths, nested libraries,
+idempotency, unchanged file bytes/other attributes, unrelated user files,
+missing runtime, redirected links, bad entry metadata and removal failure.
+No sudo, global Gatekeeper change or replacement signature is used.
+
+Final regression groups:
+
+| Group | Verification |
+| --- | --- |
+| USB acceptance | retained MTP, stale properties, preserved network composition, single write, reconnect/root/boot identity |
+| Task boundaries | cancellation, maintenance resume, selected-device binding, Android USB reset and wireless ADB |
+| Repair shell | six tests with private permissions/xattrs and command doubles |
+| Delivery | native artifact attachment, standalone export, updater ZIP, executable bits and manifest/hash coverage |
+| Existing integration | package paths, APK inclusion, plain-data refresh and native-build contract mocks |
+| Frontend | TypeScript and Vite production build |
+
+The final Python matrix ran 96 tests: 95 passed and the unrelated Rust resolver
+test skipped because rustc is absent from that WSL PATH. The frontend build passed.
+Logs in the E5 parent workspace:
+
+- out/build-logs/20261125-102634-installer-usb-mac-final-matrix-18278/command.log
+- out/build-logs/20261125-102740-installer-usb-ui-check-18501/command.log
+
+These are offline results, not native macOS/Gatekeeper acceptance. No real USB
+device was changed, no firmware packaging resumed, no native installer/Android
+artifact rebuilt, and no release or workflow was published. The next native
+build must consume these changed sources rather than reuse old artifact hashes.
+
+Ad-hoc signing is still not Developer ID signing/notarization. A system that
+blocks the command file itself can require one explicit Privacy & Security
+exception. See [Apple's first-launch guidance](https://support.apple.com/en-us/102445)
+and [notarization requirements](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution).
